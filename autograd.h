@@ -41,9 +41,14 @@ class Variable {
   static Variable subtract(const Variable& a, const Variable& b);
   static Variable elementwise_mult(const Variable& a, const Variable& b);
   static Variable matmul(const Variable& a, const Variable& b);
+  static Variable mult_scalar(const Variable& x, double s);
+  static Variable transpose2d(const Variable& x);
+  static Variable layer_norm_last_dim(const Variable& x, const Variable& gamma, const Variable& beta,
+                                      double eps = 1e-5);
   static Variable relu(const Variable& x);
   static Variable sigmoid(const Variable& x);
   static Variable tanh(const Variable& x);
+  static Variable softmax_last_dim(const Variable& x);
   static Variable mean(const Variable& x);
   static Variable mse_loss(const Variable& pred, const Variable& target);
 

@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <cstdio>
 #include <string>
+#include <random>
 #include "tensor_kernels.h"
 
 class Tensor {
@@ -131,6 +132,30 @@ public:
     return Tensor(dims, ptr, sz, dev);
   }
 
+  static Tensor zeros(std::vector<size_t> dims, std::string device_name = "cpu", int device_index = 0) {
+    return full(dims, 0.0, device_name, device_index);
+  }
+
+  static Tensor full(std::vector<size_t> dims, double value, std::string device_name = "cpu",
+                     int device_index = 0) {
+    size_t sz = compute_size(dims);
+    std::vector<double> host(sz, value);
+    Device dev = parse_device(device_name, device_index);
+    double* ptr = backend_alloc(dev, sz);
+    backend_upload(dev, ptr, host.data(), sz);
+    return Tensor(dims, ptr, sz, dev);
+  }
+
+  static Tensor randn(std::vector<size_t> dims, std::string device_name = "cpu", int device_index = 0,
+                      unsigned seed = 0) {
+    size_t sz = compute_size(dims);
+    std::vector<double> host(sz);
+    std::mt19937 gen(seed);
+    std::normal_distribution<double> dist(0.0, 1.0);
+    for (size_t i = 0; i < sz; ++i) host[i] = dist(gen);
+    return from_data(dims, host, device_name, device_index);
+  }
+
   size_t index(std::vector<size_t> x) { return host_index(x); }
 
   Tensor reshape(std::vector<size_t> new_dims) {
@@ -140,6 +165,26 @@ public:
     double* ptr = backend_alloc(device, total_size);
     backend_copy_device(device, ptr, data, total_size);
     return Tensor(new_dims, ptr, total_size, device);
+  }
+
+  Tensor squeeze() const {
+    std::vector<size_t> nd;
+    for (size_t d : dims) {
+      if (d != 1) nd.push_back(d);
+    }
+    if (nd.empty()) nd.push_back(1);
+    double* ptr = backend_alloc(device, total_size);
+    backend_copy_device(device, ptr, data, total_size);
+    return Tensor(nd, ptr, total_size, device);
+  }
+
+  Tensor unsqueeze(size_t dim) const {
+    if (dim > dims.size()) throw std::runtime_error("unsqueeze dim out of range");
+    std::vector<size_t> nd = dims;
+    nd.insert(nd.begin() + dim, 1);
+    double* ptr = backend_alloc(device, total_size);
+    backend_copy_device(device, ptr, data, total_size);
+    return Tensor(nd, ptr, total_size, device);
   }
 
   Tensor transpose() {
@@ -169,11 +214,18 @@ public:
 
   Tensor add(const Tensor& x) {
     ensure_same_device(*this, x, "add");
-    if (dims != x.dims)
-      throw std::runtime_error("Mismatched shape in add");
-    double* ptr = backend_alloc(device, total_size);
-    backend_add(device, data, x.data, ptr, total_size);
-    return Tensor(dims, ptr, total_size, device);
+    if (dims == x.dims) {
+      double* ptr = backend_alloc(device, total_size);
+      backend_add(device, data, x.data, ptr, total_size);
+      return Tensor(dims, ptr, total_size, device);
+    }
+    if (dims.size() == 2 && x.dims.size() == 2 && x.dims[0] == 1 && x.dims[1] == dims[1]) {
+      return add_rowwise(x);
+    }
+    if (dims.size() == 2 && x.dims.size() == 2 && dims[0] == 1 && dims[1] == x.dims[1] && x.dims[0] > 0) {
+      return x.add_rowwise(*this);
+    }
+    throw std::runtime_error("Mismatched shape in add (broadcast supports [B,N]+[1,N])");
   }
 
   Tensor subtract(const Tensor& x) {
@@ -193,11 +245,32 @@ public:
 
   Tensor elementwise_mult(const Tensor& x) {
     ensure_same_device(*this, x, "elementwise_mult");
-    if (dims != x.dims)
-      throw std::runtime_error("Mismatched shape in elementwise_mult");
-    double* ptr = backend_alloc(device, total_size);
-    backend_elementwise_mult(device, data, x.data, ptr, total_size);
-    return Tensor(dims, ptr, total_size, device);
+    if (dims == x.dims) {
+      double* ptr = backend_alloc(device, total_size);
+      backend_elementwise_mult(device, data, x.data, ptr, total_size);
+      return Tensor(dims, ptr, total_size, device);
+    }
+    auto broadcast_row = [](const Tensor& big, const Tensor& row) {
+      if (big.dims.size() != 2 || row.dims.size() != 2 || row.dims[0] != 1 || row.dims[1] != big.dims[1]) {
+        throw std::runtime_error("Mismatched shape in elementwise_mult");
+      }
+      std::vector<double> ah = big.get_data();
+      std::vector<double> rh = row.get_data();
+      std::vector<double> out(ah.size());
+      for (size_t i = 0; i < big.dims[0]; ++i) {
+        for (size_t j = 0; j < big.dims[1]; ++j) {
+          out[i * big.dims[1] + j] = ah[i * big.dims[1] + j] * rh[j];
+        }
+      }
+      return Tensor::from_data(big.dims, out, big.get_device_type(), big.get_device_index());
+    };
+    if (dims.size() == 2 && x.dims.size() == 2 && x.dims[0] == 1 && x.dims[1] == dims[1]) {
+      return broadcast_row(*this, x);
+    }
+    if (dims.size() == 2 && x.dims.size() == 2 && dims[0] == 1 && dims[1] == x.dims[1]) {
+      return broadcast_row(x, *this);
+    }
+    throw std::runtime_error("Mismatched shape in elementwise_mult");
   }
 
   Tensor pow(double x) {
@@ -236,7 +309,7 @@ public:
     return Tensor(dims, ptr, total_size, device);
   }
 
-  Tensor add_rowwise(const Tensor& row) {
+  Tensor add_rowwise(const Tensor& row) const {
     ensure_same_device(*this, row, "add_rowwise");
     if (dims.size() != 2 || row.dims.size() != 2 || row.dims[0] != 1 || row.dims[1] != dims[1]) {
       throw std::runtime_error("add_rowwise expects [B,N] + [1,N]");

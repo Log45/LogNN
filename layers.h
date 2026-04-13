@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <cmath>
 #include <memory>
+#include <random>
+#include <string>
 #include <vector>
 
 #include "autograd.h"
@@ -10,11 +12,22 @@
 class Module {
  public:
   virtual ~Module() = default;
-  virtual Variable forward(const Variable& x) = 0;
-  virtual std::vector<Variable> parameters() = 0;
+  virtual Variable forward(const Variable& x) {
+    (void)x;
+    throw std::runtime_error("forward is not implemented on this module");
+  }
+  virtual std::vector<Variable> parameters() { return {}; }
   virtual void zero_grad() {
     for (auto& p : parameters()) p.zero_grad();
   }
+
+  virtual void set_training(bool training) { training_ = training; }
+  void train() { set_training(true); }
+  void eval() { set_training(false); }
+  bool is_training() const { return training_; }
+
+ protected:
+  bool training_ = true;
 };
 
 class Linear : public Module {
@@ -75,6 +88,85 @@ class Linear : public Module {
       b_node->grad = b_node->grad.add(bgrad);
     }
   }
+};
+
+class ReLU_mod : public Module {
+ public:
+  Variable forward(const Variable& x) override { return Variable::relu(x); }
+  std::vector<Variable> parameters() override { return {}; }
+};
+
+class Sigmoid_mod : public Module {
+ public:
+  Variable forward(const Variable& x) override { return Variable::sigmoid(x); }
+  std::vector<Variable> parameters() override { return {}; }
+};
+
+class Tanh_mod : public Module {
+ public:
+  Variable forward(const Variable& x) override { return Variable::tanh(x); }
+  std::vector<Variable> parameters() override { return {}; }
+};
+
+class Sequential : public Module {
+ public:
+  explicit Sequential(std::vector<std::shared_ptr<Module>> layers)
+      : layers_(std::move(layers)) {}
+
+  void set_training(bool training) override {
+    training_ = training;
+    for (auto& m : layers_) m->set_training(training);
+  }
+
+  Variable forward(const Variable& x) override {
+    Variable y = x;
+    for (auto& m : layers_) y = m->forward(y);
+    return y;
+  }
+
+  std::vector<Variable> parameters() override {
+    std::vector<Variable> p;
+    for (auto& m : layers_) {
+      auto mp = m->parameters();
+      p.insert(p.end(), mp.begin(), mp.end());
+    }
+    return p;
+  }
+
+ private:
+  std::vector<std::shared_ptr<Module>> layers_;
+};
+
+class Softmax_mod : public Module {
+ public:
+  Variable forward(const Variable& x) override { return Variable::softmax_last_dim(x); }
+  std::vector<Variable> parameters() override { return {}; }
+};
+
+class Dropout : public Module {
+ public:
+  explicit Dropout(double p = 0.5, unsigned seed = 42) : p_(p), gen_(seed) {}
+
+  Variable forward(const Variable& x) override {
+    if (!is_training() || p_ <= 0.0) return x;
+    Tensor xd = x.node->data;
+    const double scale = 1.0 / (1.0 - p_);
+    std::bernoulli_distribution dist(1.0 - p_);
+    std::vector<double> maskv(xd.total_size);
+    for (size_t i = 0; i < xd.total_size; ++i) {
+      maskv[i] = dist(gen_) ? scale : 0.0;
+    }
+    Tensor mask_t =
+        Tensor::from_data(xd.get_dims(), maskv, xd.get_device_type(), xd.get_device_index());
+    Variable mask_var(mask_t, false);
+    return Variable::elementwise_mult(x, mask_var);
+  }
+
+  std::vector<Variable> parameters() override { return {}; }
+
+ private:
+  double p_;
+  std::mt19937 gen_;
 };
 
 inline Variable relu(const Variable& x) { return Variable::relu(x); }

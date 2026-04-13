@@ -33,16 +33,22 @@ if [ "$(uname -s)" = "Darwin" ]; then
   PY_LDFLAGS="-undefined dynamic_lookup"
 fi
 
+OMP_CXXFLAGS=""
+if [ "${WITH_OPENMP:-}" = "1" ]; then
+  OMP_CXXFLAGS="-DWITH_OPENMP -fopenmp"
+  echo "OpenMP enabled (WITH_OPENMP=1)"
+fi
+
 echo "Step 1: compiling backend dispatch (CPU-only)..."
-g++ -O3 -Wall -std=c++14 -fPIC -c tensor_kernels.cc -o tensor_kernels_backend.o
+g++ -O3 -Wall -std=c++14 -fPIC $OMP_CXXFLAGS -c tensor_kernels.cc -o tensor_kernels_backend.o
 
 echo "Step 2: compiling autograd core..."
-g++ -O3 -Wall -std=c++14 -fPIC -c autograd.cc -o autograd.o
+g++ -O3 -Wall -std=c++14 -fPIC $OMP_CXXFLAGS -c autograd.cc -o autograd.o
 
 echo "Step 3: compiling pybind11 module (CPU-only)..."
-g++ -O3 -Wall -std=c++14 -fPIC $PYBIND_INCLUDES -c lognn.cc -o lognn.o
+g++ -O3 -Wall -std=c++14 -fPIC $OMP_CXXFLAGS $PYBIND_INCLUDES -c lognn.cc -o lognn.o
 
 echo "Step 4: linking (CPU-only)..."
-g++ -shared -o "lognn${EXT_SUFFIX}" lognn.o autograd.o tensor_kernels_backend.o $PY_LDFLAGS
+g++ -shared $OMP_CXXFLAGS -o "lognn${EXT_SUFFIX}" lognn.o autograd.o tensor_kernels_backend.o $PY_LDFLAGS
 
 echo "CPU-only build successful!"

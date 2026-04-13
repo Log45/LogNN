@@ -8,8 +8,8 @@ def main():
     xv = lognn.Variable(x, False)
     yv = lognn.Variable(y, False)
 
-    model = lognn.Linear(1, 1, "cpu", 0)
-    optim = lognn.SGD(model.parameters(), 0.01)
+    model = lognn.nn.Linear(1, 1, "cpu", 0)
+    optim = lognn.optim.SGD(model.parameters(), 0.01)
 
     loss_vals = []
     for _ in range(100):

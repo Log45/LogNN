@@ -5,6 +5,10 @@
 #include <cstring>
 #include <stdexcept>
 
+#ifdef WITH_OPENMP
+#include <omp.h>
+#endif
+
 namespace {
 [[noreturn]] void throw_cuda_unavailable() {
   throw std::runtime_error("CUDA backend requested but this binary was built without CUDA support");
@@ -122,6 +126,9 @@ void backend_sync(const Device& device) {
 
 void backend_neg(const Device& device, const double* a, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = -a[i];
     return;
   }
@@ -134,6 +141,9 @@ void backend_neg(const Device& device, const double* a, double* out, size_t n) {
 
 void backend_reciprocal(const Device& device, const double* a, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = 1.0 / a[i];
     return;
   }
@@ -146,6 +156,9 @@ void backend_reciprocal(const Device& device, const double* a, double* out, size
 
 void backend_add(const Device& device, const double* a, const double* b, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = a[i] + b[i];
     return;
   }
@@ -158,6 +171,9 @@ void backend_add(const Device& device, const double* a, const double* b, double*
 
 void backend_subtract(const Device& device, const double* a, const double* b, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = a[i] - b[i];
     return;
   }
@@ -170,6 +186,9 @@ void backend_subtract(const Device& device, const double* a, const double* b, do
 
 void backend_mult_scalar(const Device& device, const double* a, double s, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = a[i] * s;
     return;
   }
@@ -182,6 +201,9 @@ void backend_mult_scalar(const Device& device, const double* a, double s, double
 
 void backend_elementwise_mult(const Device& device, const double* a, const double* b, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = a[i] * b[i];
     return;
   }
@@ -194,6 +216,9 @@ void backend_elementwise_mult(const Device& device, const double* a, const doubl
 
 void backend_pow(const Device& device, const double* a, double p, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = std::pow(a[i], p);
     return;
   }
@@ -206,6 +231,9 @@ void backend_pow(const Device& device, const double* a, double p, double* out, s
 
 void backend_relu(const Device& device, const double* a, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = a[i] > 0.0 ? a[i] : 0.0;
     return;
   }
@@ -218,6 +246,9 @@ void backend_relu(const Device& device, const double* a, double* out, size_t n) 
 
 void backend_binarilize(const Device& device, const double* a, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = a[i] > 0.0 ? 1.0 : 0.0;
     return;
   }
@@ -230,6 +261,9 @@ void backend_binarilize(const Device& device, const double* a, double* out, size
 
 void backend_exp(const Device& device, const double* a, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = std::exp(a[i]);
     return;
   }
@@ -242,6 +276,9 @@ void backend_exp(const Device& device, const double* a, double* out, size_t n) {
 
 void backend_sigmoid(const Device& device, const double* a, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = 1.0 / (1.0 + std::exp(-a[i]));
     return;
   }
@@ -254,6 +291,9 @@ void backend_sigmoid(const Device& device, const double* a, double* out, size_t 
 
 void backend_tanh(const Device& device, const double* a, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) out[i] = std::tanh(a[i]);
     return;
   }
@@ -266,6 +306,9 @@ void backend_tanh(const Device& device, const double* a, double* out, size_t n) 
 
 void backend_softmax_last_dim(const Device& device, const double* a, double* out, size_t rows, size_t cols) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (rows > 64)
+#endif
     for (size_t r = 0; r < rows; ++r) {
       size_t base = r * cols;
       double mx = a[base];
@@ -290,6 +333,9 @@ void backend_softmax_last_dim(const Device& device, const double* a, double* out
 void backend_sum_all(const Device& device, const double* a, double* out, size_t n) {
   if (device.type == DeviceType::CPU) {
     double s = 0.0;
+#ifdef WITH_OPENMP
+#pragma omp parallel for reduction(+ : s) if (n > 8192)
+#endif
     for (size_t i = 0; i < n; ++i) s += a[i];
     out[0] = s;
     return;
@@ -304,6 +350,9 @@ void backend_sum_all(const Device& device, const double* a, double* out, size_t 
 void backend_add_rowwise(const Device& device, const double* a, const double* row, double* out,
                          size_t batch, size_t n) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (batch * n > 8192)
+#endif
     for (size_t i = 0; i < batch; ++i) {
       for (size_t j = 0; j < n; ++j) {
         out[i * n + j] = a[i * n + j] + row[j];
@@ -320,6 +369,9 @@ void backend_add_rowwise(const Device& device, const double* a, const double* ro
 
 void backend_transpose_2d(const Device& device, const double* a, double* out, size_t rows, size_t cols) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (rows * cols > 8192)
+#endif
     for (size_t i = 0; i < rows; ++i) {
       for (size_t j = 0; j < cols; ++j) {
         out[j * rows + i] = a[i * cols + j];
@@ -355,6 +407,9 @@ void backend_transpose_3d(const Device& device, const double* a, double* out, si
 void backend_matmul_2d(const Device& device, const double* A, const double* B, double* C,
                        size_t M, size_t K, size_t N) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (M * N * K > 500000)
+#endif
     for (size_t i = 0; i < M; ++i) {
       for (size_t k = 0; k < K; ++k) {
         const double a = A[i * K + k];
@@ -375,6 +430,9 @@ void backend_matmul_2d(const Device& device, const double* A, const double* B, d
 void backend_matmul_batched(const Device& device, const double* A, const double* B, double* C,
                             size_t batch, size_t M, size_t K, size_t N) {
   if (device.type == DeviceType::CPU) {
+#ifdef WITH_OPENMP
+#pragma omp parallel for if (batch > 1 && batch * M * N * K > 500000)
+#endif
     for (size_t b = 0; b < batch; ++b) {
       const double* A_b = A + b * M * K;
       double* C_b = C + b * M * N;
