@@ -1,7 +1,25 @@
 #pragma once
 #include <cstddef>
+#include <string>
 
-// GPU memory management
+enum class DeviceType {
+  CPU = 0,
+  CUDA = 1,
+};
+
+struct Device {
+  DeviceType type = DeviceType::CPU;
+  int index = 0;
+
+  Device() = default;
+  Device(DeviceType type, int index) : type(type), index(index) {}
+};
+
+Device parse_device(const std::string& device_name, int index = 0);
+const char* device_type_name(DeviceType type);
+bool device_equal(const Device& a, const Device& b);
+
+// Legacy CUDA kernels (implemented in tensor_kernels.cu)
 double* gpu_alloc(size_t n);
 void gpu_free(double* ptr);
 void gpu_upload(double* dst, const double* src, size_t n);
@@ -21,6 +39,11 @@ void gpu_pow(const double* a, double p, double* out, size_t n);
 void gpu_relu(const double* a, double* out, size_t n);
 void gpu_binarilize(const double* a, double* out, size_t n);
 void gpu_exp(const double* a, double* out, size_t n);
+void gpu_sigmoid(const double* a, double* out, size_t n);
+void gpu_tanh(const double* a, double* out, size_t n);
+void gpu_softmax_last_dim(const double* a, double* out, size_t rows, size_t cols);
+void gpu_sum_all(const double* a, double* out, size_t n);
+void gpu_add_rowwise(const double* a, const double* row, double* out, size_t batch, size_t n);
 
 // Transpose
 void gpu_transpose_2d(const double* a, double* out, size_t rows, size_t cols);
@@ -31,3 +54,37 @@ void gpu_matmul_2d(const double* A, const double* B, double* C,
                    size_t M, size_t K, size_t N);
 void gpu_matmul_batched(const double* A, const double* B, double* C,
                         size_t batch, size_t M, size_t K, size_t N);
+
+// Device-agnostic backend interface used by Tensor.
+double* backend_alloc(const Device& device, size_t n);
+void backend_free(const Device& device, double* ptr);
+void backend_upload(const Device& device, double* dst, const double* src, size_t n);
+void backend_download(const Device& device, double* dst, const double* src, size_t n);
+void backend_copy_device(const Device& device, double* dst, const double* src, size_t n);
+void backend_zero(const Device& device, double* ptr, size_t n);
+void backend_sync(const Device& device);
+
+void backend_neg(const Device& device, const double* a, double* out, size_t n);
+void backend_reciprocal(const Device& device, const double* a, double* out, size_t n);
+void backend_add(const Device& device, const double* a, const double* b, double* out, size_t n);
+void backend_subtract(const Device& device, const double* a, const double* b, double* out, size_t n);
+void backend_mult_scalar(const Device& device, const double* a, double s, double* out, size_t n);
+void backend_elementwise_mult(const Device& device, const double* a, const double* b, double* out, size_t n);
+void backend_pow(const Device& device, const double* a, double p, double* out, size_t n);
+void backend_relu(const Device& device, const double* a, double* out, size_t n);
+void backend_binarilize(const Device& device, const double* a, double* out, size_t n);
+void backend_exp(const Device& device, const double* a, double* out, size_t n);
+void backend_sigmoid(const Device& device, const double* a, double* out, size_t n);
+void backend_tanh(const Device& device, const double* a, double* out, size_t n);
+void backend_softmax_last_dim(const Device& device, const double* a, double* out, size_t rows, size_t cols);
+void backend_sum_all(const Device& device, const double* a, double* out, size_t n);
+void backend_add_rowwise(const Device& device, const double* a, const double* row, double* out,
+                         size_t batch, size_t n);
+
+void backend_transpose_2d(const Device& device, const double* a, double* out, size_t rows, size_t cols);
+void backend_transpose_3d(const Device& device, const double* a, double* out, size_t B, size_t R, size_t C);
+
+void backend_matmul_2d(const Device& device, const double* A, const double* B, double* C,
+                       size_t M, size_t K, size_t N);
+void backend_matmul_batched(const Device& device, const double* A, const double* B, double* C,
+                            size_t batch, size_t M, size_t K, size_t N);

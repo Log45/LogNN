@@ -6,7 +6,14 @@ unset NVCC_PREPEND_FLAGS
 unset NVCC_PREPEND_FLAGS_BACKUP
 unset NVCC_APPEND_FLAGS
 
-rm -f *.o hw3tensor*.so
+rm -f *.o lognn*.so hw3tensor*.so
+
+# If nvcc is unavailable, immediately fall back to CPU-only.
+if ! command -v nvcc >/dev/null 2>&1; then
+  echo "nvcc not found. Falling back to CPU-only build."
+  bash ./compile_cpu.sh
+  exit 0
+fi
 
 # Auto-detect GPU architecture using detect_gpu.cu
 ARCH=""
@@ -20,19 +27,54 @@ fi
 rm -f /tmp/_detect_gpu
 
 if [ -z "$ARCH" ]; then
-  echo "GPU detection failed, using nvcc default"
+  echo "No CUDA device detected. Falling back to CPU-only build."
+  bash ./compile_cpu.sh
+  exit 0
 fi
 
-EXT_SUFFIX=$(python3-config --extension-suffix)
-PYBIND_INCLUDES=$(python3 -m pybind11 --includes)
+if [ -z "${PYTHON_BIN:-}" ]; then
+  for cand in python3 python; do
+    if command -v "$cand" >/dev/null 2>&1 \
+      && "$cand" -c "import pybind11" >/dev/null 2>&1; then
+      PYTHON_BIN="$cand"
+      break
+    fi
+  done
+fi
+
+if [ -z "${PYTHON_BIN:-}" ]; then
+  echo "Could not find a Python interpreter with pybind11 installed."
+  echo "Set PYTHON_BIN explicitly, e.g. PYTHON_BIN=python bash compile.sh"
+  exit 1
+fi
+
+PYTHON_CONFIG_BIN="${PYTHON_BIN}-config"
+EXT_SUFFIX=$($PYTHON_BIN -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX') or '.so')")
+PYBIND_INCLUDES=$($PYTHON_BIN -m pybind11 --includes)
+PY_LDFLAGS=""
+
+if command -v "$PYTHON_CONFIG_BIN" >/dev/null 2>&1; then
+  PY_LDFLAGS=$($PYTHON_CONFIG_BIN --embed --ldflags 2>/dev/null || $PYTHON_CONFIG_BIN --ldflags)
+fi
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  # macOS Python extensions should resolve Python symbols at load time.
+  PY_LDFLAGS="-undefined dynamic_lookup"
+fi
 
 echo "Step 1: compiling CUDA kernels..."
-nvcc -O3 -std=c++11 -Xcompiler -fPIC $ARCH -c tensor_kernels.cu -o tensor_kernels.o
+nvcc -O3 -std=c++14 -Xcompiler -fPIC $ARCH -c tensor_kernels.cu -o tensor_kernels.o
 
-echo "Step 2: compiling pybind11 module..."
-g++ -O3 -Wall -std=c++11 -fPIC $PYBIND_INCLUDES -c hw3tensor.cc -o hw3tensor.o
+echo "Step 2: compiling backend dispatch..."
+g++ -O3 -Wall -std=c++14 -fPIC -DWITH_CUDA -c tensor_kernels.cc -o tensor_kernels_backend.o
 
-echo "Step 3: linking..."
-nvcc -shared -o "hw3tensor${EXT_SUFFIX}" hw3tensor.o tensor_kernels.o
+echo "Step 3: compiling autograd core..."
+g++ -O3 -Wall -std=c++14 -fPIC -DWITH_CUDA -c autograd.cc -o autograd.o
+
+echo "Step 4: compiling pybind11 module..."
+g++ -O3 -Wall -std=c++14 -fPIC -DWITH_CUDA $PYBIND_INCLUDES -c lognn.cc -o lognn.o
+
+echo "Step 5: linking..."
+nvcc -shared -o "lognn${EXT_SUFFIX}" lognn.o autograd.o tensor_kernels.o tensor_kernels_backend.o $PY_LDFLAGS
 
 echo "Build successful!"

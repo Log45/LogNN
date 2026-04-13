@@ -120,6 +120,56 @@ __global__ void kernel_exp(const double* a, double* out, size_t n) {
   if (i < n) out[i] = exp(a[i]);
 }
 
+__global__ void kernel_sigmoid(const double* a, double* out, size_t n) {
+  size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) {
+    double x = a[i];
+    out[i] = 1.0 / (1.0 + exp(-x));
+  }
+}
+
+__global__ void kernel_tanh(const double* a, double* out, size_t n) {
+  size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) out[i] = tanh(a[i]);
+}
+
+// One thread per row: stable softmax along last dimension (cols).
+__global__ void kernel_softmax_last_dim(const double* a, double* out, size_t rows, size_t cols) {
+  size_t r = blockIdx.x * blockDim.x + threadIdx.x;
+  if (r >= rows) return;
+  size_t base = r * cols;
+  double mx = a[base];
+  for (size_t j = 1; j < cols; ++j) {
+    double v = a[base + j];
+    if (v > mx) mx = v;
+  }
+  double sum = 0.0;
+  for (size_t j = 0; j < cols; ++j) {
+    double e = exp(a[base + j] - mx);
+    out[base + j] = e;
+    sum += e;
+  }
+  double inv = 1.0 / sum;
+  for (size_t j = 0; j < cols; ++j) out[base + j] *= inv;
+}
+
+__global__ void kernel_sum_atomic(const double* a, double* out, size_t n) {
+  size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < n) {
+    atomicAdd(out, a[i]);
+  }
+}
+
+// out[b*n + j] = a[b*n + j] + row[j], row length n (typically batch 1 x n).
+__global__ void kernel_add_rowwise(const double* a, const double* row, double* out, size_t batch, size_t n) {
+  size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  size_t total = batch * n;
+  if (idx < total) {
+    size_t j = idx % n;
+    out[idx] = a[idx] + row[j];
+  }
+}
+
 __global__ void kernel_transpose_2d(const double* a, double* out,
                                      size_t rows, size_t cols) {
   size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -266,6 +316,34 @@ void gpu_binarilize(const double* a, double* out, size_t n) {
 
 void gpu_exp(const double* a, double* out, size_t n) {
   kernel_exp<<<grid1d(n), BLOCK_SIZE>>>(a, out, n);
+  KERNEL_CHECK();
+}
+
+void gpu_sigmoid(const double* a, double* out, size_t n) {
+  kernel_sigmoid<<<grid1d(n), BLOCK_SIZE>>>(a, out, n);
+  KERNEL_CHECK();
+}
+
+void gpu_tanh(const double* a, double* out, size_t n) {
+  kernel_tanh<<<grid1d(n), BLOCK_SIZE>>>(a, out, n);
+  KERNEL_CHECK();
+}
+
+void gpu_softmax_last_dim(const double* a, double* out, size_t rows, size_t cols) {
+  int grid = grid1d(rows);
+  kernel_softmax_last_dim<<<grid, BLOCK_SIZE>>>(a, out, rows, cols);
+  KERNEL_CHECK();
+}
+
+void gpu_sum_all(const double* a, double* out, size_t n) {
+  CUDA_CHECK(cudaMemset(out, 0, sizeof(double)));
+  kernel_sum_atomic<<<grid1d(n), BLOCK_SIZE>>>(a, out, n);
+  KERNEL_CHECK();
+}
+
+void gpu_add_rowwise(const double* a, const double* row, double* out, size_t batch, size_t n) {
+  size_t total = batch * n;
+  kernel_add_rowwise<<<grid1d(total), BLOCK_SIZE>>>(a, row, out, batch, n);
   KERNEL_CHECK();
 }
 
