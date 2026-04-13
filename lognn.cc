@@ -188,4 +188,7 @@ PYBIND11_MODULE(lognn, m) {
   m.def("sigmoid", &sigmoid);
   m.def("tanh", &tanh_act);
   m.def("mse_loss", &mse_loss);
+  m.def("is_mlx_native_enabled", &backend_mlx_native_available);
+  m.def("mlx_dispatch_count", &backend_mlx_dispatch_count);
+  m.def("reset_mlx_dispatch_count", &backend_mlx_reset_dispatch_count);
 }

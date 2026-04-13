@@ -8,6 +8,20 @@ unset NVCC_APPEND_FLAGS
 
 rm -f *.o lognn*.so hw3tensor*.so
 
+# On MacBook hardware, prefer MLX profile first.
+if [ "$(uname -s)" = "Darwin" ]; then
+  HW_MODEL=$(sysctl -n hw.model 2>/dev/null || echo "")
+  if [[ "$HW_MODEL" == MacBook* ]]; then
+    echo "Detected MacBook model ($HW_MODEL). Attempting MLX build profile first."
+    if bash ./compile_mlx.sh; then
+      exit 0
+    fi
+    echo "MLX build failed on MacBook. Falling back to CPU-only build."
+    bash ./compile_cpu.sh
+    exit 0
+  fi
+fi
+
 # If nvcc is unavailable, immediately fall back to CPU-only.
 if ! command -v nvcc >/dev/null 2>&1; then
   echo "nvcc not found. Falling back to CPU-only build."

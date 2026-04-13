@@ -11,6 +11,7 @@ public:
   std::vector<size_t> dims;
   Device device;
   double* data;
+  void* backend_handle;
   size_t total_size;
   bool owns_data;
 
@@ -27,18 +28,20 @@ public:
   }
 
   Tensor(std::vector<size_t> dims, std::string device_name = "cpu", int device_index = 0)
-      : dims(dims), device(parse_device(device_name, device_index)), data(nullptr), total_size(0), owns_data(true) {
+      : dims(dims), device(parse_device(device_name, device_index)), data(nullptr),
+        backend_handle(nullptr), total_size(0), owns_data(true) {
     total_size = compute_size(dims);
     data = backend_alloc(device, total_size);
     backend_zero(device, data, total_size);
   }
 
   Tensor(std::vector<size_t> dims, double* dev_ptr, size_t sz, Device dev)
-      : dims(dims), device(dev), data(dev_ptr), total_size(sz), owns_data(true) {}
+      : dims(dims), device(dev), data(dev_ptr), backend_handle(nullptr), total_size(sz), owns_data(true) {}
 
   Tensor(std::vector<size_t> dims, std::vector<std::vector<size_t>> idx,
          std::vector<double> val, std::string device_name = "cpu", int device_index = 0)
-      : dims(dims), device(parse_device(device_name, device_index)), data(nullptr), total_size(0), owns_data(true) {
+      : dims(dims), device(parse_device(device_name, device_index)), data(nullptr),
+        backend_handle(nullptr), total_size(0), owns_data(true) {
     total_size = compute_size(dims);
     std::vector<double> host_data(total_size, 0.0);
     if (idx.size() != val.size())
@@ -50,15 +53,17 @@ public:
   }
 
   Tensor(const Tensor& other)
-      : dims(other.dims), device(other.device), data(nullptr), total_size(other.total_size), owns_data(true) {
+      : dims(other.dims), device(other.device), data(nullptr), backend_handle(nullptr),
+        total_size(other.total_size), owns_data(true) {
     data = backend_alloc(device, total_size);
     backend_copy_device(device, data, other.data, total_size);
   }
 
   Tensor(Tensor&& other) noexcept
       : dims(std::move(other.dims)), device(other.device), data(other.data),
-        total_size(other.total_size), owns_data(other.owns_data) {
+        backend_handle(other.backend_handle), total_size(other.total_size), owns_data(other.owns_data) {
     other.data = nullptr;
+    other.backend_handle = nullptr;
     other.owns_data = false;
   }
 
@@ -69,6 +74,7 @@ public:
       device = other.device;
       total_size = other.total_size;
       owns_data = true;
+      backend_handle = nullptr;
       data = backend_alloc(device, total_size);
       backend_copy_device(device, data, other.data, total_size);
     }
@@ -81,9 +87,11 @@ public:
       dims = std::move(other.dims);
       device = other.device;
       data = other.data;
+      backend_handle = other.backend_handle;
       total_size = other.total_size;
       owns_data = other.owns_data;
       other.data = nullptr;
+      other.backend_handle = nullptr;
       other.owns_data = false;
     }
     return *this;

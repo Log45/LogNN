@@ -1,4 +1,5 @@
 #include "tensor_kernels.h"
+#include "apple_backend_config.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +14,14 @@ namespace {
 [[noreturn]] void throw_cuda_unavailable() {
   throw std::runtime_error("CUDA backend requested but this binary was built without CUDA support");
 }
+#ifndef WITH_MLX
+[[noreturn]] void throw_mlx_unavailable() {
+  throw std::runtime_error("MLX backend requested but this binary was built without WITH_MLX support");
+}
+#endif
+[[noreturn]] void throw_mps_unavailable() {
+  throw std::runtime_error("MPS backend is not implemented; use device=\"mlx\" for Apple GPU path");
+}
 
 void ensure_cpu_ptr(double* ptr) {
   if (!ptr) {
@@ -25,6 +34,12 @@ Device parse_device(const std::string& device_name, int index) {
   if (device_name == "cpu" || device_name == "CPU") {
     return Device{DeviceType::CPU, index};
   }
+  if (device_name == "mlx" || device_name == "MLX") {
+    return Device{DeviceType::MLX, index};
+  }
+  if (device_name == "mps" || device_name == "MPS" || device_name == "metal" || device_name == "METAL") {
+    return Device{DeviceType::MPS, index};
+  }
   if (device_name == "cuda" || device_name == "CUDA" || device_name == "gpu" || device_name == "GPU") {
     return Device{DeviceType::CUDA, index};
   }
@@ -32,11 +47,44 @@ Device parse_device(const std::string& device_name, int index) {
 }
 
 const char* device_type_name(DeviceType type) {
-  return type == DeviceType::CPU ? "cpu" : "cuda";
+  switch (type) {
+    case DeviceType::CPU:
+      return "cpu";
+    case DeviceType::CUDA:
+      return "cuda";
+    case DeviceType::MLX:
+      return "mlx";
+    case DeviceType::MPS:
+      return "mps";
+    default:
+      return "unknown";
+  }
 }
 
 bool device_equal(const Device& a, const Device& b) {
   return a.type == b.type && a.index == b.index;
+}
+
+bool backend_mlx_native_available() {
+#ifdef WITH_MLX
+  return mlx_native_available();
+#else
+  return false;
+#endif
+}
+
+size_t backend_mlx_dispatch_count() {
+#ifdef WITH_MLX
+  return mlx_dispatch_count();
+#else
+  return 0;
+#endif
+}
+
+void backend_mlx_reset_dispatch_count() {
+#ifdef WITH_MLX
+  mlx_reset_dispatch_count();
+#endif
 }
 
 double* backend_alloc(const Device& device, size_t n) {
@@ -44,6 +92,16 @@ double* backend_alloc(const Device& device, size_t n) {
     double* ptr = new double[n];
     ensure_cpu_ptr(ptr);
     return ptr;
+  }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    return mlx_alloc(n);
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) {
+    throw_mps_unavailable();
   }
 #ifdef WITH_CUDA
   return gpu_alloc(n);
@@ -60,6 +118,17 @@ void backend_free(const Device& device, double* ptr) {
     delete[] ptr;
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_free(ptr);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) {
+    throw_mps_unavailable();
+  }
 #ifdef WITH_CUDA
   gpu_free(ptr);
 #else
@@ -71,6 +140,17 @@ void backend_upload(const Device& device, double* dst, const double* src, size_t
   if (device.type == DeviceType::CPU) {
     std::memcpy(dst, src, n * sizeof(double));
     return;
+  }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_upload(dst, src, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) {
+    throw_mps_unavailable();
   }
 #ifdef WITH_CUDA
   gpu_upload(dst, src, n);
@@ -84,6 +164,17 @@ void backend_download(const Device& device, double* dst, const double* src, size
     std::memcpy(dst, src, n * sizeof(double));
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_download(dst, src, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) {
+    throw_mps_unavailable();
+  }
 #ifdef WITH_CUDA
   gpu_download(dst, src, n);
 #else
@@ -95,6 +186,17 @@ void backend_copy_device(const Device& device, double* dst, const double* src, s
   if (device.type == DeviceType::CPU) {
     std::memcpy(dst, src, n * sizeof(double));
     return;
+  }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_copy_device(dst, src, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) {
+    throw_mps_unavailable();
   }
 #ifdef WITH_CUDA
   gpu_copy_device(dst, src, n);
@@ -108,6 +210,17 @@ void backend_zero(const Device& device, double* ptr, size_t n) {
     std::fill(ptr, ptr + n, 0.0);
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_zero(ptr, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) {
+    throw_mps_unavailable();
+  }
 #ifdef WITH_CUDA
   gpu_zero(ptr, n);
 #else
@@ -117,6 +230,17 @@ void backend_zero(const Device& device, double* ptr, size_t n) {
 
 void backend_sync(const Device& device) {
   if (device.type == DeviceType::CPU) return;
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_sync();
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) {
+    throw_mps_unavailable();
+  }
 #ifdef WITH_CUDA
   gpu_sync();
 #else
@@ -132,6 +256,15 @@ void backend_neg(const Device& device, const double* a, double* out, size_t n) {
     for (size_t i = 0; i < n; ++i) out[i] = -a[i];
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_neg(a, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_neg(a, out, n);
 #else
@@ -147,6 +280,15 @@ void backend_reciprocal(const Device& device, const double* a, double* out, size
     for (size_t i = 0; i < n; ++i) out[i] = 1.0 / a[i];
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_reciprocal(a, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_reciprocal(a, out, n);
 #else
@@ -162,6 +304,15 @@ void backend_add(const Device& device, const double* a, const double* b, double*
     for (size_t i = 0; i < n; ++i) out[i] = a[i] + b[i];
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_add(a, b, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_add_impl(a, b, out, n);
 #else
@@ -177,6 +328,15 @@ void backend_subtract(const Device& device, const double* a, const double* b, do
     for (size_t i = 0; i < n; ++i) out[i] = a[i] - b[i];
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_subtract(a, b, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_subtract(a, b, out, n);
 #else
@@ -192,6 +352,15 @@ void backend_mult_scalar(const Device& device, const double* a, double s, double
     for (size_t i = 0; i < n; ++i) out[i] = a[i] * s;
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_mult_scalar(a, s, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_mult_scalar(a, s, out, n);
 #else
@@ -207,6 +376,15 @@ void backend_elementwise_mult(const Device& device, const double* a, const doubl
     for (size_t i = 0; i < n; ++i) out[i] = a[i] * b[i];
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_elementwise_mult(a, b, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_elementwise_mult(a, b, out, n);
 #else
@@ -222,6 +400,15 @@ void backend_pow(const Device& device, const double* a, double p, double* out, s
     for (size_t i = 0; i < n; ++i) out[i] = std::pow(a[i], p);
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_pow(a, p, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_pow(a, p, out, n);
 #else
@@ -237,6 +424,15 @@ void backend_relu(const Device& device, const double* a, double* out, size_t n) 
     for (size_t i = 0; i < n; ++i) out[i] = a[i] > 0.0 ? a[i] : 0.0;
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_relu(a, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_relu(a, out, n);
 #else
@@ -252,6 +448,15 @@ void backend_binarilize(const Device& device, const double* a, double* out, size
     for (size_t i = 0; i < n; ++i) out[i] = a[i] > 0.0 ? 1.0 : 0.0;
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_binarilize(a, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_binarilize(a, out, n);
 #else
@@ -267,6 +472,15 @@ void backend_exp(const Device& device, const double* a, double* out, size_t n) {
     for (size_t i = 0; i < n; ++i) out[i] = std::exp(a[i]);
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_exp(a, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_exp(a, out, n);
 #else
@@ -282,6 +496,15 @@ void backend_sigmoid(const Device& device, const double* a, double* out, size_t 
     for (size_t i = 0; i < n; ++i) out[i] = 1.0 / (1.0 + std::exp(-a[i]));
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_sigmoid(a, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_sigmoid(a, out, n);
 #else
@@ -297,6 +520,15 @@ void backend_tanh(const Device& device, const double* a, double* out, size_t n) 
     for (size_t i = 0; i < n; ++i) out[i] = std::tanh(a[i]);
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_tanh(a, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_tanh(a, out, n);
 #else
@@ -323,6 +555,15 @@ void backend_softmax_last_dim(const Device& device, const double* a, double* out
     }
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_softmax_last_dim(a, out, rows, cols);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_softmax_last_dim(a, out, rows, cols);
 #else
@@ -340,6 +581,15 @@ void backend_sum_all(const Device& device, const double* a, double* out, size_t 
     out[0] = s;
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_sum_all(a, out, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_sum_all(a, out, n);
 #else
@@ -360,6 +610,15 @@ void backend_add_rowwise(const Device& device, const double* a, const double* ro
     }
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_add_rowwise(a, row, out, batch, n);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_add_rowwise(a, row, out, batch, n);
 #else
@@ -379,6 +638,15 @@ void backend_transpose_2d(const Device& device, const double* a, double* out, si
     }
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_transpose_2d(a, out, rows, cols);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_transpose_2d(a, out, rows, cols);
 #else
@@ -397,6 +665,15 @@ void backend_transpose_3d(const Device& device, const double* a, double* out, si
     }
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_transpose_3d(a, out, B, R, C);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_transpose_3d(a, out, B, R, C);
 #else
@@ -420,6 +697,15 @@ void backend_matmul_2d(const Device& device, const double* A, const double* B, d
     }
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_matmul_2d(A, B, C, M, K, N);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_matmul_2d(A, B, C, M, K, N);
 #else
@@ -447,6 +733,15 @@ void backend_matmul_batched(const Device& device, const double* A, const double*
     }
     return;
   }
+  if (device.type == DeviceType::MLX) {
+#ifdef WITH_MLX
+    mlx_matmul_batched(A, B, C, batch, M, K, N);
+    return;
+#else
+    throw_mlx_unavailable();
+#endif
+  }
+  if (device.type == DeviceType::MPS) throw_mps_unavailable();
 #ifdef WITH_CUDA
   gpu_matmul_batched(A, B, C, batch, M, K, N);
 #else

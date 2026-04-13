@@ -1,10 +1,13 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 enum class DeviceType {
   CPU = 0,
   CUDA = 1,
+  MLX = 2,
+  MPS = 3,
 };
 
 struct Device {
@@ -88,3 +91,39 @@ void backend_matmul_2d(const Device& device, const double* A, const double* B, d
                        size_t M, size_t K, size_t N);
 void backend_matmul_batched(const Device& device, const double* A, const double* B, double* C,
                             size_t batch, size_t M, size_t K, size_t N);
+
+// MLX/Apple backend runtime diagnostics.
+bool backend_mlx_native_available();
+size_t backend_mlx_dispatch_count();
+void backend_mlx_reset_dispatch_count();
+bool mlx_native_available();
+size_t mlx_dispatch_count();
+void mlx_reset_dispatch_count();
+
+// MLX/Metal backend entrypoints (implemented in tensor_kernels_mlx.mm when WITH_MLX).
+double* mlx_alloc(size_t n);
+void mlx_free(double* ptr);
+void mlx_upload(double* dst, const double* src, size_t n);
+void mlx_download(double* dst, const double* src, size_t n);
+void mlx_copy_device(double* dst, const double* src, size_t n);
+void mlx_zero(double* ptr, size_t n);
+void mlx_sync();
+void mlx_neg(const double* a, double* out, size_t n);
+void mlx_reciprocal(const double* a, double* out, size_t n);
+void mlx_add(const double* a, const double* b, double* out, size_t n);
+void mlx_subtract(const double* a, const double* b, double* out, size_t n);
+void mlx_mult_scalar(const double* a, double s, double* out, size_t n);
+void mlx_elementwise_mult(const double* a, const double* b, double* out, size_t n);
+void mlx_pow(const double* a, double p, double* out, size_t n);
+void mlx_relu(const double* a, double* out, size_t n);
+void mlx_binarilize(const double* a, double* out, size_t n);
+void mlx_exp(const double* a, double* out, size_t n);
+void mlx_sigmoid(const double* a, double* out, size_t n);
+void mlx_tanh(const double* a, double* out, size_t n);
+void mlx_softmax_last_dim(const double* a, double* out, size_t rows, size_t cols);
+void mlx_sum_all(const double* a, double* out, size_t n);
+void mlx_add_rowwise(const double* a, const double* row, double* out, size_t batch, size_t n);
+void mlx_transpose_2d(const double* a, double* out, size_t rows, size_t cols);
+void mlx_transpose_3d(const double* a, double* out, size_t B, size_t R, size_t C);
+void mlx_matmul_2d(const double* A, const double* B, double* C, size_t M, size_t K, size_t N);
+void mlx_matmul_batched(const double* A, const double* B, double* C, size_t batch, size_t M, size_t K, size_t N);

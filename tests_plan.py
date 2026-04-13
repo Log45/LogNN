@@ -93,6 +93,39 @@ def test_transformer_tiny():
     assert loss1 < loss0, "Transformer encoder should reduce MSE on synthetic data"
 
 
+def test_mlx_cpu_parity():
+    assert lognn.is_mlx_native_enabled(), "MLX native backend should be available on Apple Silicon build"
+    lognn.reset_mlx_dispatch_count()
+    a_cpu = lognn.Tensor.from_data([2, 3], [0.2, -1.0, 3.0, 0.5, 2.0, -0.7], "cpu", 0)
+    b_cpu = lognn.Tensor.from_data([3, 2], [1.0, 2.0, -1.0, 0.25, 0.5, -3.0], "cpu", 0)
+    out_cpu = a_cpu.matmul(b_cpu).sigmoid().get_data()
+
+    a_mlx = lognn.Tensor.from_data([2, 3], [0.2, -1.0, 3.0, 0.5, 2.0, -0.7], "mlx", 0)
+    b_mlx = lognn.Tensor.from_data([3, 2], [1.0, 2.0, -1.0, 0.25, 0.5, -3.0], "mlx", 0)
+    out_mlx = a_mlx.matmul(b_mlx).sigmoid().get_data()
+
+    for c, m in zip(out_cpu, out_mlx):
+        assert abs(c - m) < 1e-6
+    assert lognn.mlx_dispatch_count() > 0, "MLX dispatch counter should increase for GPU kernels"
+
+
+def test_mlx_train_smoke_step():
+    lognn.reset_mlx_dispatch_count()
+    model = lognn.nn.Linear(2, 1, "mlx", 0)
+    x = lognn.Variable(lognn.Tensor.from_data([3, 2], [0.0, 1.0, 1.0, 0.0, 2.0, 2.0], "mlx", 0), False)
+    y = lognn.Variable(lognn.Tensor.from_data([3, 1], [1.0, 1.0, 0.0], "mlx", 0), False)
+    opt = lognn.optim.SGD(model.parameters(), 0.05)
+    opt.zero_grad()
+    pred = model.forward(x)
+    loss = lognn.mse_loss(pred, y)
+    loss.backward()
+    before = loss.data().get_data()[0]
+    opt.step()
+    after = lognn.mse_loss(model.forward(x), y).data().get_data()[0]
+    assert abs(after - before) > 1e-12
+    assert lognn.mlx_dispatch_count() > 10, "Training step should dispatch multiple MLX kernels"
+
+
 def main():
     test_sequential()
     test_softmax_backward()
@@ -100,6 +133,8 @@ def main():
     test_adamw()
     test_tensor_v1()
     test_transformer_tiny()
+    test_mlx_cpu_parity()
+    test_mlx_train_smoke_step()
     print("tests_plan: all passed")
 
 
