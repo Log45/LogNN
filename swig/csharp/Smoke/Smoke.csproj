@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../generated/*.cs" LinkBase="Generated" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../native/liblognn_swig.dylib" CopyToOutputDirectory="Always" Condition="Exists('../native/liblognn_swig.dylib')" />
+    <None Include="../native/liblognn_swig.so" CopyToOutputDirectory="Always" Condition="Exists('../native/liblognn_swig.so')" />
+  </ItemGroup>
+</Project>

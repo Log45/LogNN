@@ -165,7 +165,7 @@ def run_stress(
     print("Notes:")
     print("  - If x/y report \"cuda\", conv and pooling ran on CUDA tensors in this build.")
     print("  - If \"mlx\", conv/pool/transpose run on Metal when this build includes those kernels")
-    print("    (see BACKEND_KERNELS.md). Compare timing to --device cpu.")
+    print("    (see docs/BACKEND_KERNELS.md). Compare timing to --device cpu.")
     print("  - Compare elapsed time: GPU builds should be much faster than CPU at large spatial.")
     if x.data().get_device_type() == "cuda":
         print("  - On Linux/NVIDIA, run `watch -n0.5 nvidia-smi` in another terminal while this runs;")

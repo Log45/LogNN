@@ -32,4 +32,4 @@
 - Apple Silicon support (MLX/MPS)
 - Load an LLM and perform inference
 - Train code completion model?
-    - https://arxiv.org/html/2504.04030v1
+  - https://arxiv.org/html/2504.04030v1

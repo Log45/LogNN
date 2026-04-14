@@ -1,0 +1,16 @@
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/obj/Release/net8.0/Smoke.GeneratedMSBuildEditorConfig.editorconfig
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/obj/Release/net8.0/Smoke.AssemblyInfoInputs.cache
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/obj/Release/net8.0/Smoke.AssemblyInfo.cs
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/obj/Release/net8.0/Smoke.csproj.CoreCompileInputs.cache
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/obj/Release/net8.0/Smoke.sourcelink.json
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/bin/Release/net8.0/Smoke
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/bin/Release/net8.0/liblognn_swig.dylib
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/obj/Release/net8.0/Smoke.dll
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/obj/Release/net8.0/refint/Smoke.dll
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/obj/Release/net8.0/Smoke.pdb
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/bin/Release/net8.0/Smoke.deps.json
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/bin/Release/net8.0/Smoke.runtimeconfig.json
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/bin/Release/net8.0/Smoke.dll
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/bin/Release/net8.0/Smoke.pdb
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/obj/Release/net8.0/Smoke.genruntimeconfig.cache
+/Users/log/Documents/code/LogNN/swig/csharp/Smoke/obj/Release/net8.0/ref/Smoke.dll

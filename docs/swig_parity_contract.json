@@ -1,0 +1,132 @@
+{
+  "source": "lognn.cc",
+  "languages": ["csharp", "java", "go"],
+  "deferred": [
+    {
+      "symbol": "save_model/load_model pickle exactness",
+      "status": "deferred",
+      "rationale": "SWIG uses language-neutral binary backend while preserving callable names save_model/load_model"
+    }
+  ],
+  "areas": [
+    {
+      "name": "Tensor",
+      "symbols": [
+        "Tensor(dims, device, device_index)",
+        "Tensor(dims, idx, val, device, device_index)",
+        "Tensor.ones",
+        "Tensor.zeros",
+        "Tensor.full",
+        "Tensor.randn",
+        "Tensor.from_data",
+        "Tensor.reshape",
+        "Tensor.squeeze",
+        "Tensor.unsqueeze",
+        "Tensor.transpose",
+        "Tensor.neg",
+        "Tensor.reciprocal",
+        "Tensor.add",
+        "Tensor.subtract",
+        "Tensor.mult",
+        "Tensor.elementwise_mult",
+        "Tensor.pow",
+        "Tensor.relu",
+        "Tensor.sigmoid",
+        "Tensor.tanh",
+        "Tensor.softmax_last_dim",
+        "Tensor.sum",
+        "Tensor.mean",
+        "Tensor.exp",
+        "Tensor.matmul",
+        "Tensor.get_data",
+        "Tensor.get_dims",
+        "Tensor.get_device_type",
+        "Tensor.get_device_index"
+      ]
+    },
+    {
+      "name": "Variable",
+      "symbols": [
+        "Variable(data, requires_grad)",
+        "Variable.data",
+        "Variable.grad",
+        "Variable.requires_grad",
+        "Variable.set_data",
+        "Variable.zero_grad",
+        "Variable.backward",
+        "Variable.add",
+        "Variable.subtract",
+        "Variable.elementwise_mult",
+        "Variable.matmul",
+        "Variable.reshape",
+        "Variable.mult_scalar",
+        "Variable.transpose2d",
+        "Variable.layer_norm_last_dim",
+        "Variable.relu",
+        "Variable.sigmoid",
+        "Variable.tanh",
+        "Variable.softmax_last_dim",
+        "Variable.mean",
+        "Variable.mse_loss",
+        "Variable.embedding_gather",
+        "Variable.cross_entropy_next_token_lm",
+        "Variable.add_nchw_bias",
+        "Variable.conv2d",
+        "Variable.max_pool2d",
+        "Variable.avg_pool2d",
+        "Variable.conv_transpose2d",
+        "Variable.log_softmax_last_dim",
+        "Variable.cross_entropy_logits",
+        "Variable.batch_norm2d"
+      ]
+    },
+    {
+      "name": "Optim",
+      "symbols": ["SGD", "Adam", "AdamW"]
+    },
+    {
+      "name": "NN",
+      "symbols": [
+        "Module",
+        "Linear",
+        "Embedding",
+        "ReLU",
+        "Sigmoid",
+        "Tanh",
+        "Softmax",
+        "Flatten",
+        "Dropout",
+        "Sequential",
+        "LayerNorm",
+        "TransformerEncoderLayer",
+        "TransformerEncoder",
+        "CausalTransformerEncoderLayer",
+        "CausalTransformerEncoder",
+        "Conv2d",
+        "MaxPool2d",
+        "AvgPool2d",
+        "ConvTranspose2d",
+        "BatchNorm2d"
+      ]
+    },
+    {
+      "name": "FreeFunctions",
+      "symbols": [
+        "relu",
+        "sigmoid",
+        "tanh",
+        "mse_loss",
+        "save_model",
+        "load_model",
+        "is_mlx_native_enabled",
+        "mlx_dispatch_count",
+        "reset_mlx_dispatch_count"
+      ]
+    }
+  ],
+  "status": {
+    "csharp": "implemented",
+    "java": "implemented",
+    "go": "implemented"
+  }
+}

@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-// Multi-backend ops: see BACKEND_KERNELS.md.
+// Multi-backend ops: see docs/BACKEND_KERNELS.md.
 
 enum class DeviceType {
   CPU = 0,

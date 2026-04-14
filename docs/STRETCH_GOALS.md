@@ -1,4 +1,4 @@
-# Stretch goals (from design_doc.md)
+# Stretch goals (from `docs/design_doc.md`)
 
 These items are **not** implemented in the core library; they are tracked here as follow-on epics.
 
@@ -9,7 +9,7 @@ These items are **not** implemented in the core library; they are tracked here a
 
 ## Load an LLM and run inference
 
-- Choose a weight format (e.g. safetensors) and a minimal model spec (layers matching this repo’s ops).
+- Choose a weight format (e.g. safetensors) and a minimal model spec (layers matching this repo's ops).
 - Add inference-only ops as needed: RoPE, GELU/SiLU, KV-cache, etc.
 - Keep tokenization in Python (`tiktoken`, `tokenizers`, etc.) and pass token ids into C++ as `[seq]` or `[1,seq]` tensors.
 

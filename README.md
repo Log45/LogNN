@@ -22,18 +22,54 @@ The project is designed for learning and experimentation: concise APIs, readable
 
 ## Build and Setup
 
-From the repo root:
+### Python (pybind) setup
 
+Prerequisites:
+
+- C++ toolchain (`g++`/`clang++`)
+- Python 3 + pip
+- `pybind11` installed in the same Python interpreter used for build
+
+Install Python-side requirements:
+
+- `python3 -m pip install -r requirements.txt`
+- `python3 -m pip install pybind11`
+
+Build from repo root:
 
 - Dynamic build: `bash compile.sh`
-  - This will compile with MLX if on a Mac, CUDA if it's availble, and CPU if not. 
+  - On macOS MacBook, it tries MLX first, then falls back to CPU.
+  - On Linux/NVIDIA with `nvcc`, it builds CUDA; otherwise CPU fallback.
 - CPU build: `bash compile_cpu.sh`
-- CUDA build: `bash compile.sh`
-- Apple MLX build: `bash compile_mlx.sh`
+- Apple MLX build (macOS only): `bash compile_mlx.sh`
 
-After building, run scripts with the extension on your path:
+Run Python tests/examples with the local extension:
 
 - `PYTHONPATH=. python3 tests_plan.py`
+
+If you use a non-default interpreter, set `PYTHON_BIN` during build:
+
+- `PYTHON_BIN=python3.12 bash compile_cpu.sh`
+
+### SWIG setup (C#/Java/Go)
+
+Base prerequisites:
+
+- `swig`
+- C++ toolchain (`g++`)
+
+Per-language toolchains:
+
+- C#: `.NET SDK` (`dotnet`)
+- Java: JDK (`javac`, `jar`)
+- Go: Go toolchain (`go`)
+
+Build + run:
+
+- C#: `bash build_swig_csharp.sh` then `bash run_csharp_smoke.sh`
+- Java: `bash build_swig_java.sh` then `bash run_java_smoke.sh`
+- Go: `bash build_swig_go.sh` then `bash run_go_smoke.sh`
+- Unified parity gate: `bash validate_swig_parity.sh`
 
 ## Quick Python Usage
 
@@ -96,6 +132,13 @@ lognn.load_model(model, "model.pkl")
 - `tests_mnist_cnn.py`: CNN training on MNIST.
 - `tests_checkpoint.py`: model save/load round-trip tests.
 - `tests_nn_sine.py`: MLP regression training example.
+
+## Additional Docs
+
+- `docs/design_doc.md`
+- `docs/STRETCH_GOALS.md`
+- `docs/BACKEND_KERNELS.md`
+- `docs/swig_bindings.md`
 
 ## Acknowledgements
 

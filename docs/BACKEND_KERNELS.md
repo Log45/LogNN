@@ -6,7 +6,7 @@ When you add an op that should run on **CPU**, **CUDA**, and **MLX** (Apple Meta
 
 | Area | CPU | CUDA | MLX (Metal) |
 |------|-----|------|-------------|
-| Elementwise, matmul, softmax, … | `tensor_kernels.cc` | `tensor_kernels.cu` | `tensor_kernels_mlx.mm` (`kMetalSource`) |
+| Elementwise, matmul, softmax, ... | `tensor_kernels.cc` | `tensor_kernels.cu` | `tensor_kernels_mlx.mm` (`kMetalSource`) |
 | Conv2d, pooling, conv transpose | Reference in `conv_impl.cc` (`*_cpu`, vectors) | `tensor_kernels.cu` (`gpu_*_nchw`) | `tensor_kernels_mlx.mm` (`k_mlx_*`, `mlx_*_nchw`) |
 | Device dispatch | `conv_impl.cc` (`Tensor` device type) | `#if defined(WITH_CUDA)` | `#if defined(WITH_MLX)` |
 

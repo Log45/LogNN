@@ -1,0 +1,6 @@
+# External Python dependencies for test/example scripts.
+#
+# Most scripts in this repo only require the standard library plus
+# the locally built `lognn` extension module.
+# Build first (e.g. `bash compile_cpu.sh`), then run tests with PYTHONPATH=.
+pybind11
