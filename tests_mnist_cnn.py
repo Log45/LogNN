@@ -76,8 +76,8 @@ def _batch_xy(images_flat: list[float], labels: list[float], idxs: list[int]) ->
 
 
 def test_reshape_after_conv_backward():
-    conv = lognn.nn.Conv2d(1, 4, 3, 3, pad_h=1, pad_w=1, device="mlx", device_index=0)
-    x = lognn.Variable(lognn.Tensor.randn([4, 1, 28, 28], "mlx", 0, seed=1), True)
+    conv = lognn.nn.Conv2d(1, 4, 3, 3, pad_h=1, pad_w=1, device="cuda", device_index=0)
+    x = lognn.Variable(lognn.Tensor.randn([4, 1, 28, 28], "cuda", 0, seed=1), True)
     y = conv.forward(x)
     flat = lognn.Variable.reshape(y, [4, 4 * 28 * 28])
     loss = lognn.Variable.mean(flat)
@@ -96,16 +96,16 @@ def test_mnist_cnn_classifies_above_chance():
 
     model = lognn.nn.Sequential(
         [
-            lognn.nn.Conv2d(1, 8, 3, 3, pad_h=1, pad_w=1, device="mlx", device_index=0),
+            lognn.nn.Conv2d(1, 8, 3, 3, pad_h=1, pad_w=1, device="cuda", device_index=0),
             lognn.nn.ReLU(),
             lognn.nn.MaxPool2d(2, stride=2, padding=0),
-            lognn.nn.Conv2d(8, 16, 3, 3, pad_h=1, pad_w=1, device="mlx", device_index=0),
+            lognn.nn.Conv2d(8, 16, 3, 3, pad_h=1, pad_w=1, device="cuda", device_index=0),
             lognn.nn.ReLU(),
             lognn.nn.MaxPool2d(2, stride=2, padding=0),
             lognn.nn.Flatten(),
-            lognn.nn.Linear(16 * 7 * 7, 128, "mlx", 0),
+            lognn.nn.Linear(16 * 7 * 7, 128, "cuda", 0),
             lognn.nn.ReLU(),
-            lognn.nn.Linear(128, 10, "mlx", 0),
+            lognn.nn.Linear(128, 10, "cuda", 0),
         ]
     )
     model.train()
@@ -117,8 +117,8 @@ def test_mnist_cnn_classifies_above_chance():
     for _ in range(steps):
         idxs = [rng.randrange(n_train) for _ in range(batch)]
         bx, by = _batch_xy(train_x, train_y, idxs)
-        xv = lognn.Variable(lognn.Tensor.from_data([batch, 1, 28, 28], bx, "mlx", 0), False)
-        yt = lognn.Tensor.from_data([batch], by, "mlx", 0)
+        xv = lognn.Variable(lognn.Tensor.from_data([batch, 1, 28, 28], bx, "cuda", 0), False)
+        yt = lognn.Tensor.from_data([batch], by, "cuda", 0)
 
         opt.zero_grad()
         logits = model.forward(xv)
@@ -130,7 +130,7 @@ def test_mnist_cnn_classifies_above_chance():
         last_loss = loss.data().get_data()[0]
 
     test_batch = len(test_y)
-    x_test = lognn.Variable(lognn.Tensor.from_data([test_batch, 1, 28, 28], test_x, "mlx", 0), False)
+    x_test = lognn.Variable(lognn.Tensor.from_data([test_batch, 1, 28, 28], test_x, "cuda", 0), False)
     logits = model.forward(x_test).data().get_data()
     correct = 0
     for i, truth in enumerate(test_y):
