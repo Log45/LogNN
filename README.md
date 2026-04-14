@@ -132,6 +132,7 @@ lognn.load_model(model, "model.pkl")
 - `tests_mnist_cnn.py`: CNN training on MNIST.
 - `tests_checkpoint.py`: model save/load round-trip tests.
 - `tests_nn_sine.py`: MLP regression training example.
+- `mnist_opencv_demo.py`: train a CNN on MNIST with LogNN and visualize predictions with OpenCV (`python3 -m pip install numpy opencv-python`).
 
 ## Additional Docs
 

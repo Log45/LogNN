@@ -4,3 +4,7 @@
 # the locally built `lognn` extension module.
 # Build first (e.g. `bash compile_cpu.sh`), then run tests with PYTHONPATH=.
 pybind11
+
+# Optional: MNIST + OpenCV demo (`mnist_opencv_demo.py`)
+numpy
+opencv-python
