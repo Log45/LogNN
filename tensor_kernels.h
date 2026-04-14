@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+// Multi-backend ops: see BACKEND_KERNELS.md.
+
 enum class DeviceType {
   CPU = 0,
   CUDA = 1,
@@ -127,3 +129,61 @@ void mlx_transpose_2d(const double* a, double* out, size_t rows, size_t cols);
 void mlx_transpose_3d(const double* a, double* out, size_t B, size_t R, size_t C);
 void mlx_matmul_2d(const double* A, const double* B, double* C, size_t M, size_t K, size_t N);
 void mlx_matmul_batched(const double* A, const double* B, double* C, size_t batch, size_t M, size_t K, size_t N);
+
+#if defined(WITH_MLX)
+uint32_t* mlx_alloc_u32(size_t n);
+void mlx_free_u32(uint32_t* p);
+void mlx_conv2d_forward_nchw(const double* x, const double* w, double* y, size_t N, size_t Ci, size_t H, size_t W,
+                             size_t Co, size_t kH, size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho,
+                             size_t Wo);
+void mlx_conv2d_backward_nchw(const double* dy, const double* x, const double* w, double* dx, double* dw, size_t N,
+                              size_t Ci, size_t H, size_t W, size_t Co, size_t kH, size_t kW, size_t sh, size_t sw,
+                              size_t ph, size_t pw, size_t Ho, size_t Wo);
+void mlx_maxpool2d_forward_nchw(const double* x, double* y, uint32_t* argmax, size_t N, size_t C, size_t H, size_t W,
+                                size_t kH, size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo,
+                                size_t Hp, size_t Wp);
+void mlx_maxpool2d_backward_nchw(const double* dy, const uint32_t* argmax, double* dx, size_t N, size_t C, size_t H,
+                                 size_t W, size_t ph, size_t pw, size_t Ho, size_t Wo, size_t Hp, size_t Wp);
+void mlx_avgpool2d_forward_nchw(const double* x, double* y, size_t N, size_t C, size_t H, size_t W, size_t kH,
+                                size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo, size_t Hp,
+                                size_t Wp);
+void mlx_avgpool2d_backward_nchw(const double* dy, double* dx, size_t N, size_t C, size_t H, size_t W, size_t kH,
+                                 size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo, size_t Hp,
+                                 size_t Wp);
+void mlx_conv_transpose2d_forward_nchw(const double* x, const double* w, double* y, size_t N, size_t Ci, size_t Hi,
+                                       size_t Wi, size_t Co, size_t kH, size_t kW, size_t sh, size_t sw, size_t ph,
+                                       size_t pw, size_t Ho, size_t Wo);
+void mlx_conv_transpose2d_backward_nchw(const double* dy, const double* x, const double* w, double* dx, double* dw,
+                                        size_t N, size_t Ci, size_t Hi, size_t Wi, size_t Co, size_t kH, size_t kW,
+                                        size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo);
+#endif
+
+// --- Conv / pool (CUDA: tensor_kernels.cu; MLX: tensor_kernels_mlx.mm). ---
+#if defined(WITH_CUDA)
+unsigned long long* gpu_alloc_ull(size_t n);
+void gpu_free_ull(unsigned long long* p);
+void gpu_download_ull(const unsigned long long* src, unsigned long long* dst, size_t n);
+void gpu_upload_ull(unsigned long long* dst, const unsigned long long* src, size_t n);
+void gpu_conv2d_forward_nchw(const double* x, const double* w, double* y, size_t N, size_t Ci, size_t H, size_t W,
+                             size_t Co, size_t kH, size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho,
+                             size_t Wo);
+void gpu_conv2d_backward_nchw(const double* dy, const double* x, const double* w, double* dx, double* dw, size_t N,
+                              size_t Ci, size_t H, size_t W, size_t Co, size_t kH, size_t kW, size_t sh, size_t sw,
+                              size_t ph, size_t pw, size_t Ho, size_t Wo);
+void gpu_maxpool2d_forward_nchw(const double* x, double* y, unsigned long long* argmax, size_t N, size_t C, size_t H,
+                                size_t W, size_t kH, size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho,
+                                size_t Wo, size_t Hp, size_t Wp);
+void gpu_maxpool2d_backward_nchw(const double* dy, const unsigned long long* argmax, double* dx, size_t N, size_t C,
+                                 size_t H, size_t W, size_t ph, size_t pw, size_t Ho, size_t Wo, size_t Hp, size_t Wp);
+void gpu_avgpool2d_forward_nchw(const double* x, double* y, size_t N, size_t C, size_t H, size_t W, size_t kH, size_t kW,
+                                size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo, size_t Hp, size_t Wp);
+void gpu_avgpool2d_backward_nchw(const double* dy, double* dx, size_t N, size_t C, size_t H, size_t W, size_t kH,
+                                 size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo, size_t Hp,
+                                 size_t Wp);
+void gpu_conv_transpose2d_forward_nchw(const double* x, const double* w, double* y, size_t N, size_t Ci, size_t Hi,
+                                       size_t Wi, size_t Co, size_t kH, size_t kW, size_t sh, size_t sw, size_t ph,
+                                       size_t pw, size_t Ho, size_t Wo);
+void gpu_conv_transpose2d_backward_nchw(const double* dy, const double* x, const double* w, double* dx, double* dw,
+                                        size_t N, size_t Ci, size_t Hi, size_t Wi, size_t Co, size_t kH, size_t kW,
+                                        size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo);
+#endif

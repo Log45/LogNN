@@ -93,10 +93,13 @@ g++ -O3 -Wall -std=c++14 -fPIC -DWITH_CUDA $OMP_CXXFLAGS -c tensor_kernels.cc -o
 echo "Step 3: compiling autograd core..."
 g++ -O3 -Wall -std=c++14 -fPIC -DWITH_CUDA $OMP_CXXFLAGS -c autograd.cc -o autograd.o
 
+echo "Step 3b: compiling conv/pool helpers..."
+g++ -O3 -Wall -std=c++14 -fPIC -DWITH_CUDA $OMP_CXXFLAGS -c conv_impl.cc -o conv_impl.o
+
 echo "Step 4: compiling pybind11 module..."
 g++ -O3 -Wall -std=c++14 -fPIC -DWITH_CUDA $OMP_CXXFLAGS $PYBIND_INCLUDES -c lognn.cc -o lognn.o
 
 echo "Step 5: linking..."
-nvcc -shared $NVCC_OMP_LINK -o "lognn${EXT_SUFFIX}" lognn.o autograd.o tensor_kernels.o tensor_kernels_backend.o $PY_LDFLAGS
+nvcc -shared $NVCC_OMP_LINK -o "lognn${EXT_SUFFIX}" lognn.o autograd.o conv_impl.o tensor_kernels.o tensor_kernels_backend.o $PY_LDFLAGS
 
 echo "Build successful!"

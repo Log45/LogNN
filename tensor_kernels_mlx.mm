@@ -15,6 +15,7 @@ namespace {
 
 const char* kMetalSource = R"METAL(
 #include <metal_stdlib>
+#include <metal_atomic>
 using namespace metal;
 
 kernel void k_neg(const device float* a [[buffer(0)]], device float* out [[buffer(1)]], constant uint& n [[buffer(2)]], uint gid [[thread_position_in_grid]]) { if (gid < n) out[gid] = -a[gid]; }
@@ -92,6 +93,230 @@ kernel void k_sum_all(const device float* a [[buffer(0)]], device float* out [[b
     out[0] = s;
   }
 }
+
+// --- NCHW conv / pool / conv-transpose (float; mirrors CUDA reference in tensor_kernels.cu) ---
+kernel void k_mlx_nchw_pad(const device float* x [[buffer(0)]], device float* xp [[buffer(1)]], constant uint& N [[buffer(2)]], constant uint& Ci [[buffer(3)]], constant uint& H [[buffer(4)]], constant uint& W [[buffer(5)]], constant uint& ph [[buffer(6)]], constant uint& pw [[buffer(7)]], constant uint& Hp [[buffer(8)]], constant uint& Wp [[buffer(9)]], uint gid [[thread_position_in_grid]]) {
+  uint tot = N * Ci * H * W;
+  if (gid >= tot) return;
+  uint w0 = gid % W;
+  uint t = gid / W;
+  uint h0 = t % H;
+  t /= H;
+  uint c = t % Ci;
+  uint n = t / Ci;
+  uint dst = ((n * Ci + c) * Hp + (h0 + ph)) * Wp + (w0 + pw);
+  xp[dst] = x[gid];
+}
+kernel void k_mlx_im2col(const device float* xp [[buffer(0)]], device float* col [[buffer(1)]], constant uint& N [[buffer(2)]], constant uint& Ci [[buffer(3)]], constant uint& Hp [[buffer(4)]], constant uint& Wp [[buffer(5)]], constant uint& kH [[buffer(6)]], constant uint& kW [[buffer(7)]], constant uint& sh [[buffer(8)]], constant uint& sw [[buffer(9)]], constant uint& Ho [[buffer(10)]], constant uint& Wo [[buffer(11)]], constant uint& M [[buffer(12)]], constant uint& K [[buffer(13)]], uint tid [[thread_position_in_grid]]) {
+  if (tid >= M * K) return;
+  uint m = tid / K;
+  uint kk = tid % K;
+  uint rem = m % (Ho * Wo);
+  uint n = m / (Ho * Wo);
+  uint oh = rem / Wo;
+  uint ow = rem % Wo;
+  uint kw_i = kk % kW;
+  uint t2 = kk / kW;
+  uint kh_i = t2 % kH;
+  uint ci = t2 / kH;
+  uint ih = oh * sh + kh_i;
+  uint iw = ow * sw + kw_i;
+  col[tid] = xp[((n * Ci + ci) * Hp + ih) * Wp + iw];
+}
+kernel void k_mlx_scatter_y_col(const device float* ycol [[buffer(0)]], device float* y [[buffer(1)]], constant uint& N [[buffer(2)]], constant uint& Co [[buffer(3)]], constant uint& Ho [[buffer(4)]], constant uint& Wo [[buffer(5)]], constant uint& M [[buffer(6)]], uint tid [[thread_position_in_grid]]) {
+  if (tid >= M * Co) return;
+  uint m = tid / Co;
+  uint co = tid % Co;
+  float v = ycol[tid];
+  uint rem = m % (Ho * Wo);
+  uint n = m / (Ho * Wo);
+  uint oh = rem / Wo;
+  uint ow = rem % Wo;
+  y[((n * Co + co) * Ho + oh) * Wo + ow] = v;
+}
+kernel void k_mlx_col2im_atomic(const device float* col [[buffer(0)]], device atomic_float* dxp [[buffer(1)]], constant uint& N [[buffer(2)]], constant uint& Ci [[buffer(3)]], constant uint& Hp [[buffer(4)]], constant uint& Wp [[buffer(5)]], constant uint& kH [[buffer(6)]], constant uint& kW [[buffer(7)]], constant uint& sh [[buffer(8)]], constant uint& sw [[buffer(9)]], constant uint& Ho [[buffer(10)]], constant uint& Wo [[buffer(11)]], constant uint& M [[buffer(12)]], constant uint& K [[buffer(13)]], uint tid [[thread_position_in_grid]]) {
+  if (tid >= M * K) return;
+  uint m = tid / K;
+  uint kk = tid % K;
+  uint rem = m % (Ho * Wo);
+  uint n = m / (Ho * Wo);
+  uint oh = rem / Wo;
+  uint ow = rem % Wo;
+  uint kw_i = kk % kW;
+  uint t2 = kk / kW;
+  uint kh_i = t2 % kH;
+  uint ci = t2 / kH;
+  uint ih = oh * sh + kh_i;
+  uint iw = ow * sw + kw_i;
+  uint idx = ((n * Ci + ci) * Hp + ih) * Wp + iw;
+  float v = col[tid];
+  atomic_fetch_add_explicit(dxp + idx, v, memory_order_relaxed);
+}
+kernel void k_mlx_nchw_unpad(const device float* dxp [[buffer(0)]], device float* dx [[buffer(1)]], constant uint& N [[buffer(2)]], constant uint& Ci [[buffer(3)]], constant uint& H [[buffer(4)]], constant uint& W [[buffer(5)]], constant uint& ph [[buffer(6)]], constant uint& pw [[buffer(7)]], constant uint& Hp [[buffer(8)]], constant uint& Wp [[buffer(9)]], uint id [[thread_position_in_grid]]) {
+  uint tot = N * Ci * H * W;
+  if (id >= tot) return;
+  uint w0 = id % W;
+  uint t = id / W;
+  uint h0 = t % H;
+  t /= H;
+  uint c = t % Ci;
+  uint n = t / Ci;
+  uint src = ((n * Ci + c) * Hp + (h0 + ph)) * Wp + (w0 + pw);
+  dx[id] = dxp[src];
+}
+kernel void k_mlx_dcol_from_dy_w(const device float* dy_nchw [[buffer(0)]], const device float* w [[buffer(1)]], device float* dcol [[buffer(2)]], constant uint& M [[buffer(3)]], constant uint& Co [[buffer(4)]], constant uint& K [[buffer(5)]], constant uint& N [[buffer(6)]], constant uint& Ho [[buffer(7)]], constant uint& Wo [[buffer(8)]], uint tid [[thread_position_in_grid]]) {
+  if (tid >= M * K) return;
+  uint m = tid / K;
+  uint k = tid % K;
+  uint rem = m % (Ho * Wo);
+  uint n = m / (Ho * Wo);
+  uint oh = rem / Wo;
+  uint ow = rem % Wo;
+  float s = 0.0f;
+  for (uint co = 0; co < Co; ++co) {
+    float dyv = dy_nchw[((n * Co + co) * Ho + oh) * Wo + ow];
+    s += dyv * w[co * K + k];
+  }
+  dcol[tid] = s;
+}
+kernel void k_mlx_dw_from_dy_col(const device float* dy_nchw [[buffer(0)]], const device float* col [[buffer(1)]], device float* dw [[buffer(2)]], constant uint& M [[buffer(3)]], constant uint& Co [[buffer(4)]], constant uint& K [[buffer(5)]], constant uint& Ho [[buffer(6)]], constant uint& Wo [[buffer(7)]], uint tid [[thread_position_in_grid]]) {
+  if (tid >= Co * K) return;
+  uint co = tid / K;
+  uint k = tid % K;
+  float s = 0.0f;
+  for (uint m = 0; m < M; ++m) {
+    uint rem = m % (Ho * Wo);
+    uint n = m / (Ho * Wo);
+    uint oh = rem / Wo;
+    uint ow = rem % Wo;
+    float dyv = dy_nchw[((n * Co + co) * Ho + oh) * Wo + ow];
+    s += dyv * col[m * K + k];
+  }
+  dw[tid] = s;
+}
+kernel void k_mlx_maxpool_fwd(const device float* xp [[buffer(0)]], device float* y [[buffer(1)]], device uint* argmax [[buffer(2)]], constant uint& N [[buffer(3)]], constant uint& C [[buffer(4)]], constant uint& Hp [[buffer(5)]], constant uint& Wp [[buffer(6)]], constant uint& kH [[buffer(7)]], constant uint& kW [[buffer(8)]], constant uint& sh [[buffer(9)]], constant uint& sw [[buffer(10)]], constant uint& Ho [[buffer(11)]], constant uint& Wo [[buffer(12)]], uint tid [[thread_position_in_grid]]) {
+  uint nout = N * C * Ho * Wo;
+  if (tid >= nout) return;
+  uint ow = tid % Wo;
+  uint t = tid / Wo;
+  uint oh = t % Ho;
+  t /= Ho;
+  uint c = t % C;
+  uint n = t / C;
+  float best = -1e30f;
+  uint best_i = 0;
+  bool first = true;
+  for (uint kh = 0; kh < kH; ++kh) {
+    for (uint kw = 0; kw < kW; ++kw) {
+      uint ih = oh * sh + kh;
+      uint iw = ow * sw + kw;
+      uint li = ((n * C + c) * Hp + ih) * Wp + iw;
+      float v = xp[li];
+      if (first || v > best) {
+        best = v;
+        best_i = li;
+        first = false;
+      }
+    }
+  }
+  y[tid] = best;
+  argmax[tid] = best_i;
+}
+kernel void k_mlx_maxpool_bwd(const device float* dy [[buffer(0)]], const device uint* argmax [[buffer(1)]], device atomic_float* dxp [[buffer(2)]], constant uint& N [[buffer(3)]], constant uint& C [[buffer(4)]], constant uint& Hp [[buffer(5)]], constant uint& Wp [[buffer(6)]], constant uint& Ho [[buffer(7)]], constant uint& Wo [[buffer(8)]], uint tid [[thread_position_in_grid]]) {
+  uint nout = N * C * Ho * Wo;
+  if (tid >= nout) return;
+  uint a = argmax[tid];
+  atomic_fetch_add_explicit(dxp + a, dy[tid], memory_order_relaxed);
+}
+kernel void k_mlx_avgpool_fwd(const device float* xp [[buffer(0)]], device float* y [[buffer(1)]], constant uint& N [[buffer(2)]], constant uint& C [[buffer(3)]], constant uint& Hp [[buffer(4)]], constant uint& Wp [[buffer(5)]], constant uint& kH [[buffer(6)]], constant uint& kW [[buffer(7)]], constant uint& sh [[buffer(8)]], constant uint& sw [[buffer(9)]], constant uint& Ho [[buffer(10)]], constant uint& Wo [[buffer(11)]], uint tid [[thread_position_in_grid]]) {
+  uint nout = N * C * Ho * Wo;
+  if (tid >= nout) return;
+  uint ow = tid % Wo;
+  uint t = tid / Wo;
+  uint oh = t % Ho;
+  t /= Ho;
+  uint c = t % C;
+  uint n = t / C;
+  float s = 0.0f;
+  for (uint kh = 0; kh < kH; ++kh) {
+    for (uint kw = 0; kw < kW; ++kw) {
+      uint ih = oh * sh + kh;
+      uint iw = ow * sw + kw;
+      s += xp[((n * C + c) * Hp + ih) * Wp + iw];
+    }
+  }
+  float sc = 1.0f / float(kH * kW);
+  y[tid] = s * sc;
+}
+kernel void k_mlx_avgpool_bwd(const device float* dy [[buffer(0)]], device atomic_float* dxp [[buffer(1)]], constant uint& N [[buffer(2)]], constant uint& C [[buffer(3)]], constant uint& Hp [[buffer(4)]], constant uint& Wp [[buffer(5)]], constant uint& kH [[buffer(6)]], constant uint& kW [[buffer(7)]], constant uint& sh [[buffer(8)]], constant uint& sw [[buffer(9)]], constant uint& Ho [[buffer(10)]], constant uint& Wo [[buffer(11)]], constant float& scale [[buffer(12)]], uint tid [[thread_position_in_grid]]) {
+  uint nout = N * C * Ho * Wo;
+  if (tid >= nout) return;
+  uint ow = tid % Wo;
+  uint t = tid / Wo;
+  uint oh = t % Ho;
+  t /= Ho;
+  uint c = t % C;
+  uint n = t / C;
+  float g = dy[tid] * scale;
+  for (uint kh = 0; kh < kH; ++kh) {
+    for (uint kw = 0; kw < kW; ++kw) {
+      uint ih = oh * sh + kh;
+      uint iw = ow * sw + kw;
+      uint ix = ((n * C + c) * Hp + ih) * Wp + iw;
+      atomic_fetch_add_explicit(dxp + ix, g, memory_order_relaxed);
+    }
+  }
+}
+kernel void k_mlx_conv_tr_fwd(const device float* x [[buffer(0)]], const device float* w [[buffer(1)]], device atomic_float* y [[buffer(2)]], constant uint& N [[buffer(3)]], constant uint& Ci [[buffer(4)]], constant uint& Hi [[buffer(5)]], constant uint& Wi [[buffer(6)]], constant uint& Co [[buffer(7)]], constant uint& kH [[buffer(8)]], constant uint& kW [[buffer(9)]], constant uint& sh [[buffer(10)]], constant uint& sw [[buffer(11)]], constant uint& ph [[buffer(12)]], constant uint& pw [[buffer(13)]], constant uint& Ho [[buffer(14)]], constant uint& Wo [[buffer(15)]], uint tid [[thread_position_in_grid]]) {
+  uint total = N * Ci * Hi * Wi;
+  if (tid >= total) return;
+  uint wi = tid % Wi;
+  uint t = tid / Wi;
+  uint hi = t % Hi;
+  t /= Hi;
+  uint ci = t % Ci;
+  uint n = t / Ci;
+  float xv = x[((n * Ci + ci) * Hi + hi) * Wi + wi];
+  for (uint co = 0; co < Co; ++co) {
+    for (uint kh_i = 0; kh_i < kH; ++kh_i) {
+      for (uint kw_i = 0; kw_i < kW; ++kw_i) {
+        int ho = int(hi) * int(sh) + int(kh_i) - int(ph);
+        int wo = int(wi) * int(sw) + int(kw_i) - int(pw);
+        if (ho < 0 || wo < 0 || ho >= int(Ho) || wo >= int(Wo)) continue;
+        uint wi_idx = ((ci * Co + co) * kH + kh_i) * kW + kw_i;
+        uint yi = ((n * Co + co) * Ho + uint(ho)) * Wo + uint(wo);
+        atomic_fetch_add_explicit(y + yi, xv * w[wi_idx], memory_order_relaxed);
+      }
+    }
+  }
+}
+kernel void k_mlx_conv_tr_bwd(const device float* dy [[buffer(0)]], const device float* x [[buffer(1)]], const device float* w [[buffer(2)]], device atomic_float* dx [[buffer(3)]], device atomic_float* dw [[buffer(4)]], constant uint& N [[buffer(5)]], constant uint& Ci [[buffer(6)]], constant uint& Hi [[buffer(7)]], constant uint& Wi [[buffer(8)]], constant uint& Co [[buffer(9)]], constant uint& kH [[buffer(10)]], constant uint& kW [[buffer(11)]], constant uint& sh [[buffer(12)]], constant uint& sw [[buffer(13)]], constant uint& ph [[buffer(14)]], constant uint& pw [[buffer(15)]], constant uint& Ho [[buffer(16)]], constant uint& Wo [[buffer(17)]], uint tid [[thread_position_in_grid]]) {
+  uint total = N * Ci * Hi * Wi;
+  if (tid >= total) return;
+  uint wi = tid % Wi;
+  uint t = tid / Wi;
+  uint hi = t % Hi;
+  t /= Hi;
+  uint ci = t % Ci;
+  uint n = t / Ci;
+  uint xi = ((n * Ci + ci) * Hi + hi) * Wi + wi;
+  float xv = x[xi];
+  for (uint co = 0; co < Co; ++co) {
+    for (uint kh_i = 0; kh_i < kH; ++kh_i) {
+      for (uint kw_i = 0; kw_i < kW; ++kw_i) {
+        int ho = int(hi) * int(sh) + int(kh_i) - int(ph);
+        int wo = int(wi) * int(sw) + int(kw_i) - int(pw);
+        if (ho < 0 || wo < 0 || ho >= int(Ho) || wo >= int(Wo)) continue;
+        uint wi_idx = ((ci * Co + co) * kH + kh_i) * kW + kw_i;
+        uint yi = ((n * Co + co) * Ho + uint(ho)) * Wo + uint(wo);
+        float g = dy[yi];
+        if (g == 0.0f) continue;
+        atomic_fetch_add_explicit(dx + xi, g * w[wi_idx], memory_order_relaxed);
+        atomic_fetch_add_explicit(dw + wi_idx, g * xv, memory_order_relaxed);
+      }
+    }
+  }
+}
 )METAL";
 
 std::atomic<size_t> g_dispatch_count{0};
@@ -163,34 +388,88 @@ class AppleMlxContext {
     return cb;
   }
 
+  uint32_t* alloc_u32(size_t n) {
+    ensure_ready();
+    id<MTLBuffer> b = [device_ newBufferWithLength:n * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    if (!b) throw std::runtime_error("Failed to allocate uint32 Metal buffer");
+    const uintptr_t k = next_u32_key_.fetch_add(1);
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      u32_buffers_[k] = BufferRecord{b, n};
+    }
+    return reinterpret_cast<uint32_t*>(k);
+  }
+
+  void free_u32(uint32_t* p) {
+    std::lock_guard<std::mutex> lock(mu_);
+    u32_buffers_.erase(reinterpret_cast<uintptr_t>(p));
+  }
+
+  id<MTLBuffer> get_u32_buf(uint32_t* token, size_t min_n = 0) {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = u32_buffers_.find(reinterpret_cast<uintptr_t>(token));
+    if (it == u32_buffers_.end()) throw std::runtime_error("Invalid MLX uint32 buffer token");
+    if (min_n > 0 && it->second.n < min_n) throw std::runtime_error("MLX uint32 buffer too small");
+    return it->second.buffer;
+  }
+
  private:
   AppleMlxContext() {
     device_ = MTLCreateSystemDefaultDevice();
-    if (!device_) return;
+    if (!device_) {
+      init_diagnostic_ =
+          "MTLCreateSystemDefaultDevice() returned nil (no GPU, VM without Metal, or wrong Python arch — use "
+          "arm64 native Python, not x86_64 under Rosetta).";
+      return;
+    }
     queue_ = [device_ newCommandQueue];
-    if (!queue_) return;
+    if (!queue_) {
+      init_diagnostic_ = "newCommandQueue failed";
+      return;
+    }
     NSError* err = nil;
     NSString* src = [NSString stringWithUTF8String:kMetalSource];
-    library_ = [device_ newLibraryWithSource:src options:nil error:&err];
-    if (!library_) return;
+    // Default options use an older MSL; atomic_float and related atomics need a recent language version.
+    MTLCompileOptions* compile_opts = [[MTLCompileOptions alloc] init];
+    compile_opts.languageVersion = MTLLanguageVersion3_0;
+    library_ = [device_ newLibraryWithSource:src options:compile_opts error:&err];
+    if (!library_) {
+      if (err) {
+        const char* desc = err.localizedDescription.UTF8String;
+        init_diagnostic_ = desc ? std::string(desc) : std::string("newLibraryWithSource failed");
+      } else {
+        init_diagnostic_ = "newLibraryWithSource failed (no NSError)";
+      }
+      return;
+    }
     ok_ = true;
   }
 
   void ensure_ready() {
-    if (!ok_) throw std::runtime_error("MLX/Metal backend unavailable");
+    if (!ok_) {
+      std::string msg = "MLX/Metal backend unavailable";
+      if (!init_diagnostic_.empty()) {
+        msg += ": ";
+        msg += init_diagnostic_;
+      }
+      throw std::runtime_error(msg);
+    }
   }
 
   static uintptr_t ptr_to_key(double* p) { return reinterpret_cast<uintptr_t>(p); }
   static double* key_to_ptr(uintptr_t k) { return reinterpret_cast<double*>(k); }
 
   bool ok_ = false;
+  std::string init_diagnostic_;
   id<MTLDevice> device_ = nil;
   id<MTLCommandQueue> queue_ = nil;
   id<MTLLibrary> library_ = nil;
   std::unordered_map<std::string, id<MTLComputePipelineState>> pipelines_;
   std::unordered_map<uintptr_t, BufferRecord> buffers_;
+  std::unordered_map<uintptr_t, BufferRecord> u32_buffers_;
   std::mutex mu_;
   std::atomic<uintptr_t> next_key_{1};
+  std::atomic<uintptr_t> next_u32_key_{1000000};
 };
 
 void run_1d(const char* kernel_name, uint32_t n, void (^bind)(id<MTLComputeCommandEncoder>)) {
@@ -481,5 +760,478 @@ void mlx_matmul_batched(const double* A, const double* B, double* C, size_t batc
     [enc setBytes:&mm length:sizeof(mm) atIndex:4];
     [enc setBytes:&kk length:sizeof(kk) atIndex:5];
     [enc setBytes:&nn length:sizeof(nn) atIndex:6];
+  });
+}
+
+uint32_t* mlx_alloc_u32(size_t n) {
+  return AppleMlxContext::instance().alloc_u32(n);
+}
+
+void mlx_free_u32(uint32_t* p) {
+  AppleMlxContext::instance().free_u32(p);
+}
+
+void mlx_conv2d_forward_nchw(const double* x, const double* w, double* y, size_t N, size_t Ci, size_t H, size_t W,
+                             size_t Co, size_t kH, size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho,
+                             size_t Wo) {
+  auto& ctx = AppleMlxContext::instance();
+  const size_t Hp = H + 2 * ph;
+  const size_t Wp = W + 2 * pw;
+  const size_t K = Ci * kH * kW;
+  const size_t M = N * Ho * Wo;
+  double* xp = mlx_alloc(N * Ci * Hp * Wp);
+  mlx_zero(xp, N * Ci * Hp * Wp);
+  id<MTLBuffer> xb = ctx.get_buffer(const_cast<double*>(x), N * Ci * H * W);
+  id<MTLBuffer> xpb = ctx.get_buffer(xp, N * Ci * Hp * Wp);
+  uint32_t N32 = static_cast<uint32_t>(N), Ci32 = static_cast<uint32_t>(Ci), H32 = static_cast<uint32_t>(H),
+           W32 = static_cast<uint32_t>(W);
+  uint32_t ph32 = static_cast<uint32_t>(ph), pw32 = static_cast<uint32_t>(pw), Hp32 = static_cast<uint32_t>(Hp),
+           Wp32 = static_cast<uint32_t>(Wp);
+  run_1d("k_mlx_nchw_pad", static_cast<uint32_t>(N * Ci * H * W), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:xb offset:0 atIndex:0];
+    [enc setBuffer:xpb offset:0 atIndex:1];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:2];
+    [enc setBytes:&Ci32 length:sizeof(Ci32) atIndex:3];
+    [enc setBytes:&H32 length:sizeof(H32) atIndex:4];
+    [enc setBytes:&W32 length:sizeof(W32) atIndex:5];
+    [enc setBytes:&ph32 length:sizeof(ph32) atIndex:6];
+    [enc setBytes:&pw32 length:sizeof(pw32) atIndex:7];
+    [enc setBytes:&Hp32 length:sizeof(Hp32) atIndex:8];
+    [enc setBytes:&Wp32 length:sizeof(Wp32) atIndex:9];
+  });
+  double* col = mlx_alloc(M * K);
+  id<MTLBuffer> col_b = ctx.get_buffer(col, M * K);
+  uint32_t N2 = static_cast<uint32_t>(N), Ci2 = static_cast<uint32_t>(Ci), Hp2 = static_cast<uint32_t>(Hp),
+           Wp2 = static_cast<uint32_t>(Wp);
+  uint32_t kH32 = static_cast<uint32_t>(kH), kW32 = static_cast<uint32_t>(kW), sh32 = static_cast<uint32_t>(sh),
+           sw32 = static_cast<uint32_t>(sw);
+  uint32_t Ho32 = static_cast<uint32_t>(Ho), Wo32 = static_cast<uint32_t>(Wo);
+  uint32_t M32 = static_cast<uint32_t>(M), K32 = static_cast<uint32_t>(K);
+  run_1d("k_mlx_im2col", static_cast<uint32_t>(M * K), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:xpb offset:0 atIndex:0];
+    [enc setBuffer:col_b offset:0 atIndex:1];
+    [enc setBytes:&N2 length:sizeof(N2) atIndex:2];
+    [enc setBytes:&Ci2 length:sizeof(Ci2) atIndex:3];
+    [enc setBytes:&Hp2 length:sizeof(Hp2) atIndex:4];
+    [enc setBytes:&Wp2 length:sizeof(Wp2) atIndex:5];
+    [enc setBytes:&kH32 length:sizeof(kH32) atIndex:6];
+    [enc setBytes:&kW32 length:sizeof(kW32) atIndex:7];
+    [enc setBytes:&sh32 length:sizeof(sh32) atIndex:8];
+    [enc setBytes:&sw32 length:sizeof(sw32) atIndex:9];
+    [enc setBytes:&Ho32 length:sizeof(Ho32) atIndex:10];
+    [enc setBytes:&Wo32 length:sizeof(Wo32) atIndex:11];
+    [enc setBytes:&M32 length:sizeof(M32) atIndex:12];
+    [enc setBytes:&K32 length:sizeof(K32) atIndex:13];
+  });
+  mlx_free(xp);
+  double* wt = mlx_alloc(K * Co);
+  mlx_transpose_2d(w, wt, Co, K);
+  double* ycol = mlx_alloc(M * Co);
+  mlx_zero(ycol, M * Co);
+  mlx_matmul_2d(col, wt, ycol, M, K, Co);
+  mlx_free(col);
+  mlx_free(wt);
+  mlx_zero(y, N * Co * Ho * Wo);
+  id<MTLBuffer> ycol_b = ctx.get_buffer(ycol, M * Co);
+  id<MTLBuffer> y_b = ctx.get_buffer(y, N * Co * Ho * Wo);
+  uint32_t N3 = static_cast<uint32_t>(N), Co3 = static_cast<uint32_t>(Co), Ho3 = static_cast<uint32_t>(Ho),
+           Wo3 = static_cast<uint32_t>(Wo);
+  uint32_t M3 = static_cast<uint32_t>(M);
+  run_1d("k_mlx_scatter_y_col", static_cast<uint32_t>(M * Co), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:ycol_b offset:0 atIndex:0];
+    [enc setBuffer:y_b offset:0 atIndex:1];
+    [enc setBytes:&N3 length:sizeof(N3) atIndex:2];
+    [enc setBytes:&Co3 length:sizeof(Co3) atIndex:3];
+    [enc setBytes:&Ho3 length:sizeof(Ho3) atIndex:4];
+    [enc setBytes:&Wo3 length:sizeof(Wo3) atIndex:5];
+    [enc setBytes:&M3 length:sizeof(M3) atIndex:6];
+  });
+  mlx_free(ycol);
+}
+
+void mlx_conv2d_backward_nchw(const double* dy, const double* x, const double* w, double* dx, double* dw, size_t N,
+                              size_t Ci, size_t H, size_t W, size_t Co, size_t kH, size_t kW, size_t sh, size_t sw,
+                              size_t ph, size_t pw, size_t Ho, size_t Wo) {
+  auto& ctx = AppleMlxContext::instance();
+  const size_t Hp = H + 2 * ph;
+  const size_t Wp = W + 2 * pw;
+  const size_t Kdim = Ci * kH * kW;
+  const size_t M = N * Ho * Wo;
+  double* xp = mlx_alloc(N * Ci * Hp * Wp);
+  mlx_zero(xp, N * Ci * Hp * Wp);
+  id<MTLBuffer> xb = ctx.get_buffer(const_cast<double*>(x), N * Ci * H * W);
+  id<MTLBuffer> xpb = ctx.get_buffer(xp, N * Ci * Hp * Wp);
+  uint32_t N32 = static_cast<uint32_t>(N), Ci32 = static_cast<uint32_t>(Ci), H32 = static_cast<uint32_t>(H),
+           W32 = static_cast<uint32_t>(W);
+  uint32_t ph32 = static_cast<uint32_t>(ph), pw32 = static_cast<uint32_t>(pw), Hp32 = static_cast<uint32_t>(Hp),
+           Wp32 = static_cast<uint32_t>(Wp);
+  run_1d("k_mlx_nchw_pad", static_cast<uint32_t>(N * Ci * H * W), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:xb offset:0 atIndex:0];
+    [enc setBuffer:xpb offset:0 atIndex:1];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:2];
+    [enc setBytes:&Ci32 length:sizeof(Ci32) atIndex:3];
+    [enc setBytes:&H32 length:sizeof(H32) atIndex:4];
+    [enc setBytes:&W32 length:sizeof(W32) atIndex:5];
+    [enc setBytes:&ph32 length:sizeof(ph32) atIndex:6];
+    [enc setBytes:&pw32 length:sizeof(pw32) atIndex:7];
+    [enc setBytes:&Hp32 length:sizeof(Hp32) atIndex:8];
+    [enc setBytes:&Wp32 length:sizeof(Wp32) atIndex:9];
+  });
+  double* col = mlx_alloc(M * Kdim);
+  id<MTLBuffer> col_b = ctx.get_buffer(col, M * Kdim);
+  uint32_t N2 = static_cast<uint32_t>(N), Ci2 = static_cast<uint32_t>(Ci), Hp2 = static_cast<uint32_t>(Hp),
+           Wp2 = static_cast<uint32_t>(Wp);
+  uint32_t kH32 = static_cast<uint32_t>(kH), kW32 = static_cast<uint32_t>(kW), sh32 = static_cast<uint32_t>(sh),
+           sw32 = static_cast<uint32_t>(sw);
+  uint32_t Ho32 = static_cast<uint32_t>(Ho), Wo32 = static_cast<uint32_t>(Wo);
+  uint32_t M32 = static_cast<uint32_t>(M), K32 = static_cast<uint32_t>(Kdim);
+  run_1d("k_mlx_im2col", static_cast<uint32_t>(M * Kdim), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:xpb offset:0 atIndex:0];
+    [enc setBuffer:col_b offset:0 atIndex:1];
+    [enc setBytes:&N2 length:sizeof(N2) atIndex:2];
+    [enc setBytes:&Ci2 length:sizeof(Ci2) atIndex:3];
+    [enc setBytes:&Hp2 length:sizeof(Hp2) atIndex:4];
+    [enc setBytes:&Wp2 length:sizeof(Wp2) atIndex:5];
+    [enc setBytes:&kH32 length:sizeof(kH32) atIndex:6];
+    [enc setBytes:&kW32 length:sizeof(kW32) atIndex:7];
+    [enc setBytes:&sh32 length:sizeof(sh32) atIndex:8];
+    [enc setBytes:&sw32 length:sizeof(sw32) atIndex:9];
+    [enc setBytes:&Ho32 length:sizeof(Ho32) atIndex:10];
+    [enc setBytes:&Wo32 length:sizeof(Wo32) atIndex:11];
+    [enc setBytes:&M32 length:sizeof(M32) atIndex:12];
+    [enc setBytes:&K32 length:sizeof(K32) atIndex:13];
+  });
+  mlx_free(xp);
+  double* dcol = mlx_alloc(M * Kdim);
+  id<MTLBuffer> dy_b = ctx.get_buffer(const_cast<double*>(dy), N * Co * Ho * Wo);
+  id<MTLBuffer> w_b = ctx.get_buffer(const_cast<double*>(w), Co * Kdim);
+  id<MTLBuffer> dcol_b = ctx.get_buffer(dcol, M * Kdim);
+  uint32_t Co32 = static_cast<uint32_t>(Co);
+  uint32_t N3 = static_cast<uint32_t>(N), Ho3 = static_cast<uint32_t>(Ho), Wo3 = static_cast<uint32_t>(Wo);
+  run_1d("k_mlx_dcol_from_dy_w", static_cast<uint32_t>(M * Kdim), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:dy_b offset:0 atIndex:0];
+    [enc setBuffer:w_b offset:0 atIndex:1];
+    [enc setBuffer:dcol_b offset:0 atIndex:2];
+    [enc setBytes:&M32 length:sizeof(M32) atIndex:3];
+    [enc setBytes:&Co32 length:sizeof(Co32) atIndex:4];
+    [enc setBytes:&K32 length:sizeof(K32) atIndex:5];
+    [enc setBytes:&N3 length:sizeof(N3) atIndex:6];
+    [enc setBytes:&Ho3 length:sizeof(Ho3) atIndex:7];
+    [enc setBytes:&Wo3 length:sizeof(Wo3) atIndex:8];
+  });
+  id<MTLBuffer> dw_b = ctx.get_buffer(dw, Co * Kdim);
+  run_1d("k_mlx_dw_from_dy_col", static_cast<uint32_t>(Co * Kdim), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:dy_b offset:0 atIndex:0];
+    [enc setBuffer:col_b offset:0 atIndex:1];
+    [enc setBuffer:dw_b offset:0 atIndex:2];
+    [enc setBytes:&M32 length:sizeof(M32) atIndex:3];
+    [enc setBytes:&Co32 length:sizeof(Co32) atIndex:4];
+    [enc setBytes:&K32 length:sizeof(K32) atIndex:5];
+    [enc setBytes:&Ho3 length:sizeof(Ho3) atIndex:6];
+    [enc setBytes:&Wo3 length:sizeof(Wo3) atIndex:7];
+  });
+  mlx_free(col);
+  double* dxp = mlx_alloc(N * Ci * Hp * Wp);
+  mlx_zero(dxp, N * Ci * Hp * Wp);
+  id<MTLBuffer> dxp_b = ctx.get_buffer(dxp, N * Ci * Hp * Wp);
+  id<MTLBuffer> dcol_b2 = ctx.get_buffer(dcol, M * Kdim);
+  run_1d("k_mlx_col2im_atomic", static_cast<uint32_t>(M * Kdim), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:dcol_b2 offset:0 atIndex:0];
+    [enc setBuffer:dxp_b offset:0 atIndex:1];
+    [enc setBytes:&N2 length:sizeof(N2) atIndex:2];
+    [enc setBytes:&Ci2 length:sizeof(Ci2) atIndex:3];
+    [enc setBytes:&Hp2 length:sizeof(Hp2) atIndex:4];
+    [enc setBytes:&Wp2 length:sizeof(Wp2) atIndex:5];
+    [enc setBytes:&kH32 length:sizeof(kH32) atIndex:6];
+    [enc setBytes:&kW32 length:sizeof(kW32) atIndex:7];
+    [enc setBytes:&sh32 length:sizeof(sh32) atIndex:8];
+    [enc setBytes:&sw32 length:sizeof(sw32) atIndex:9];
+    [enc setBytes:&Ho32 length:sizeof(Ho32) atIndex:10];
+    [enc setBytes:&Wo32 length:sizeof(Wo32) atIndex:11];
+    [enc setBytes:&M32 length:sizeof(M32) atIndex:12];
+    [enc setBytes:&K32 length:sizeof(K32) atIndex:13];
+  });
+  mlx_free(dcol);
+  mlx_zero(dx, N * Ci * H * W);
+  id<MTLBuffer> dxp_u = ctx.get_buffer(dxp, N * Ci * Hp * Wp);
+  id<MTLBuffer> dx_b = ctx.get_buffer(dx, N * Ci * H * W);
+  uint32_t H32b = static_cast<uint32_t>(H), W32b = static_cast<uint32_t>(W);
+  run_1d("k_mlx_nchw_unpad", static_cast<uint32_t>(N * Ci * H * W), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:dxp_u offset:0 atIndex:0];
+    [enc setBuffer:dx_b offset:0 atIndex:1];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:2];
+    [enc setBytes:&Ci32 length:sizeof(Ci32) atIndex:3];
+    [enc setBytes:&H32b length:sizeof(H32b) atIndex:4];
+    [enc setBytes:&W32b length:sizeof(W32b) atIndex:5];
+    [enc setBytes:&ph32 length:sizeof(ph32) atIndex:6];
+    [enc setBytes:&pw32 length:sizeof(pw32) atIndex:7];
+    [enc setBytes:&Hp32 length:sizeof(Hp32) atIndex:8];
+    [enc setBytes:&Wp32 length:sizeof(Wp32) atIndex:9];
+  });
+  mlx_free(dxp);
+}
+
+void mlx_maxpool2d_forward_nchw(const double* x, double* y, uint32_t* argmax, size_t N, size_t C, size_t H, size_t W,
+                                size_t kH, size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo,
+                                size_t Hp, size_t Wp) {
+  auto& ctx = AppleMlxContext::instance();
+  double* xp = mlx_alloc(N * C * Hp * Wp);
+  mlx_zero(xp, N * C * Hp * Wp);
+  id<MTLBuffer> xb = ctx.get_buffer(const_cast<double*>(x), N * C * H * W);
+  id<MTLBuffer> xpb = ctx.get_buffer(xp, N * C * Hp * Wp);
+  uint32_t N32 = static_cast<uint32_t>(N), C32 = static_cast<uint32_t>(C), H32 = static_cast<uint32_t>(H),
+           W32 = static_cast<uint32_t>(W);
+  uint32_t ph32 = static_cast<uint32_t>(ph), pw32 = static_cast<uint32_t>(pw), Hp32 = static_cast<uint32_t>(Hp),
+           Wp32 = static_cast<uint32_t>(Wp);
+  run_1d("k_mlx_nchw_pad", static_cast<uint32_t>(N * C * H * W), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:xb offset:0 atIndex:0];
+    [enc setBuffer:xpb offset:0 atIndex:1];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:2];
+    [enc setBytes:&C32 length:sizeof(C32) atIndex:3];
+    [enc setBytes:&H32 length:sizeof(H32) atIndex:4];
+    [enc setBytes:&W32 length:sizeof(W32) atIndex:5];
+    [enc setBytes:&ph32 length:sizeof(ph32) atIndex:6];
+    [enc setBytes:&pw32 length:sizeof(pw32) atIndex:7];
+    [enc setBytes:&Hp32 length:sizeof(Hp32) atIndex:8];
+    [enc setBytes:&Wp32 length:sizeof(Wp32) atIndex:9];
+  });
+  size_t nout = N * C * Ho * Wo;
+  id<MTLBuffer> yb = ctx.get_buffer(y, nout);
+  id<MTLBuffer> amb = ctx.get_u32_buf(argmax, nout);
+  uint32_t kH32 = static_cast<uint32_t>(kH), kW32 = static_cast<uint32_t>(kW), sh32 = static_cast<uint32_t>(sh),
+           sw32 = static_cast<uint32_t>(sw);
+  uint32_t Ho32 = static_cast<uint32_t>(Ho), Wo32 = static_cast<uint32_t>(Wo);
+  uint32_t Hp2 = static_cast<uint32_t>(Hp), Wp2 = static_cast<uint32_t>(Wp);
+  run_1d("k_mlx_maxpool_fwd", static_cast<uint32_t>(nout), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:xpb offset:0 atIndex:0];
+    [enc setBuffer:yb offset:0 atIndex:1];
+    [enc setBuffer:amb offset:0 atIndex:2];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:3];
+    [enc setBytes:&C32 length:sizeof(C32) atIndex:4];
+    [enc setBytes:&Hp2 length:sizeof(Hp2) atIndex:5];
+    [enc setBytes:&Wp2 length:sizeof(Wp2) atIndex:6];
+    [enc setBytes:&kH32 length:sizeof(kH32) atIndex:7];
+    [enc setBytes:&kW32 length:sizeof(kW32) atIndex:8];
+    [enc setBytes:&sh32 length:sizeof(sh32) atIndex:9];
+    [enc setBytes:&sw32 length:sizeof(sw32) atIndex:10];
+    [enc setBytes:&Ho32 length:sizeof(Ho32) atIndex:11];
+    [enc setBytes:&Wo32 length:sizeof(Wo32) atIndex:12];
+  });
+  mlx_free(xp);
+}
+
+void mlx_maxpool2d_backward_nchw(const double* dy, const uint32_t* argmax, double* dx, size_t N, size_t C, size_t H,
+                                 size_t W, size_t ph, size_t pw, size_t Ho, size_t Wo, size_t Hp, size_t Wp) {
+  auto& ctx = AppleMlxContext::instance();
+  double* dxp = mlx_alloc(N * C * Hp * Wp);
+  mlx_zero(dxp, N * C * Hp * Wp);
+  size_t nout = N * C * Ho * Wo;
+  id<MTLBuffer> dyb = ctx.get_buffer(const_cast<double*>(dy), nout);
+  id<MTLBuffer> amb = ctx.get_u32_buf(const_cast<uint32_t*>(argmax), nout);
+  id<MTLBuffer> dxpb = ctx.get_buffer(dxp, N * C * Hp * Wp);
+  uint32_t N32 = static_cast<uint32_t>(N), C32 = static_cast<uint32_t>(C), Hp32 = static_cast<uint32_t>(Hp),
+           Wp32 = static_cast<uint32_t>(Wp);
+  uint32_t Ho32 = static_cast<uint32_t>(Ho), Wo32 = static_cast<uint32_t>(Wo);
+  run_1d("k_mlx_maxpool_bwd", static_cast<uint32_t>(nout), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:dyb offset:0 atIndex:0];
+    [enc setBuffer:amb offset:0 atIndex:1];
+    [enc setBuffer:dxpb offset:0 atIndex:2];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:3];
+    [enc setBytes:&C32 length:sizeof(C32) atIndex:4];
+    [enc setBytes:&Hp32 length:sizeof(Hp32) atIndex:5];
+    [enc setBytes:&Wp32 length:sizeof(Wp32) atIndex:6];
+    [enc setBytes:&Ho32 length:sizeof(Ho32) atIndex:7];
+    [enc setBytes:&Wo32 length:sizeof(Wo32) atIndex:8];
+  });
+  mlx_zero(dx, N * C * H * W);
+  id<MTLBuffer> dxp_u = ctx.get_buffer(dxp, N * C * Hp * Wp);
+  id<MTLBuffer> dx_b = ctx.get_buffer(dx, N * C * H * W);
+  uint32_t H32 = static_cast<uint32_t>(H), W32 = static_cast<uint32_t>(W);
+  uint32_t ph32 = static_cast<uint32_t>(ph), pw32 = static_cast<uint32_t>(pw);
+  run_1d("k_mlx_nchw_unpad", static_cast<uint32_t>(N * C * H * W), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:dxp_u offset:0 atIndex:0];
+    [enc setBuffer:dx_b offset:0 atIndex:1];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:2];
+    [enc setBytes:&C32 length:sizeof(C32) atIndex:3];
+    [enc setBytes:&H32 length:sizeof(H32) atIndex:4];
+    [enc setBytes:&W32 length:sizeof(W32) atIndex:5];
+    [enc setBytes:&ph32 length:sizeof(ph32) atIndex:6];
+    [enc setBytes:&pw32 length:sizeof(pw32) atIndex:7];
+    [enc setBytes:&Hp32 length:sizeof(Hp32) atIndex:8];
+    [enc setBytes:&Wp32 length:sizeof(Wp32) atIndex:9];
+  });
+  mlx_free(dxp);
+}
+
+void mlx_avgpool2d_forward_nchw(const double* x, double* y, size_t N, size_t C, size_t H, size_t W, size_t kH,
+                                size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo, size_t Hp,
+                                size_t Wp) {
+  auto& ctx = AppleMlxContext::instance();
+  double* xp = mlx_alloc(N * C * Hp * Wp);
+  mlx_zero(xp, N * C * Hp * Wp);
+  id<MTLBuffer> xb = ctx.get_buffer(const_cast<double*>(x), N * C * H * W);
+  id<MTLBuffer> xpb = ctx.get_buffer(xp, N * C * Hp * Wp);
+  uint32_t N32 = static_cast<uint32_t>(N), C32 = static_cast<uint32_t>(C), H32 = static_cast<uint32_t>(H),
+           W32 = static_cast<uint32_t>(W);
+  uint32_t ph32 = static_cast<uint32_t>(ph), pw32 = static_cast<uint32_t>(pw), Hp32 = static_cast<uint32_t>(Hp),
+           Wp32 = static_cast<uint32_t>(Wp);
+  run_1d("k_mlx_nchw_pad", static_cast<uint32_t>(N * C * H * W), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:xb offset:0 atIndex:0];
+    [enc setBuffer:xpb offset:0 atIndex:1];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:2];
+    [enc setBytes:&C32 length:sizeof(C32) atIndex:3];
+    [enc setBytes:&H32 length:sizeof(H32) atIndex:4];
+    [enc setBytes:&W32 length:sizeof(W32) atIndex:5];
+    [enc setBytes:&ph32 length:sizeof(ph32) atIndex:6];
+    [enc setBytes:&pw32 length:sizeof(pw32) atIndex:7];
+    [enc setBytes:&Hp32 length:sizeof(Hp32) atIndex:8];
+    [enc setBytes:&Wp32 length:sizeof(Wp32) atIndex:9];
+  });
+  size_t nout = N * C * Ho * Wo;
+  id<MTLBuffer> yb = ctx.get_buffer(y, nout);
+  uint32_t kH32 = static_cast<uint32_t>(kH), kW32 = static_cast<uint32_t>(kW), sh32 = static_cast<uint32_t>(sh),
+           sw32 = static_cast<uint32_t>(sw);
+  uint32_t Ho32 = static_cast<uint32_t>(Ho), Wo32 = static_cast<uint32_t>(Wo);
+  uint32_t Hp2 = static_cast<uint32_t>(Hp), Wp2 = static_cast<uint32_t>(Wp);
+  run_1d("k_mlx_avgpool_fwd", static_cast<uint32_t>(nout), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:xpb offset:0 atIndex:0];
+    [enc setBuffer:yb offset:0 atIndex:1];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:2];
+    [enc setBytes:&C32 length:sizeof(C32) atIndex:3];
+    [enc setBytes:&Hp2 length:sizeof(Hp2) atIndex:4];
+    [enc setBytes:&Wp2 length:sizeof(Wp2) atIndex:5];
+    [enc setBytes:&kH32 length:sizeof(kH32) atIndex:6];
+    [enc setBytes:&kW32 length:sizeof(kW32) atIndex:7];
+    [enc setBytes:&sh32 length:sizeof(sh32) atIndex:8];
+    [enc setBytes:&sw32 length:sizeof(sw32) atIndex:9];
+    [enc setBytes:&Ho32 length:sizeof(Ho32) atIndex:10];
+    [enc setBytes:&Wo32 length:sizeof(Wo32) atIndex:11];
+  });
+  mlx_free(xp);
+}
+
+void mlx_avgpool2d_backward_nchw(const double* dy, double* dx, size_t N, size_t C, size_t H, size_t W, size_t kH,
+                                 size_t kW, size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo, size_t Hp,
+                                 size_t Wp) {
+  auto& ctx = AppleMlxContext::instance();
+  double* dxp = mlx_alloc(N * C * Hp * Wp);
+  mlx_zero(dxp, N * C * Hp * Wp);
+  size_t nout = N * C * Ho * Wo;
+  id<MTLBuffer> dyb = ctx.get_buffer(const_cast<double*>(dy), nout);
+  id<MTLBuffer> dxpb = ctx.get_buffer(dxp, N * C * Hp * Wp);
+  uint32_t N32 = static_cast<uint32_t>(N), C32 = static_cast<uint32_t>(C), Hp32 = static_cast<uint32_t>(Hp),
+           Wp32 = static_cast<uint32_t>(Wp);
+  uint32_t kH32 = static_cast<uint32_t>(kH), kW32 = static_cast<uint32_t>(kW), sh32 = static_cast<uint32_t>(sh),
+           sw32 = static_cast<uint32_t>(sw);
+  uint32_t Ho32 = static_cast<uint32_t>(Ho), Wo32 = static_cast<uint32_t>(Wo);
+  float sc = 1.0f / static_cast<float>(kH * kW);
+  run_1d("k_mlx_avgpool_bwd", static_cast<uint32_t>(nout), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:dyb offset:0 atIndex:0];
+    [enc setBuffer:dxpb offset:0 atIndex:1];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:2];
+    [enc setBytes:&C32 length:sizeof(C32) atIndex:3];
+    [enc setBytes:&Hp32 length:sizeof(Hp32) atIndex:4];
+    [enc setBytes:&Wp32 length:sizeof(Wp32) atIndex:5];
+    [enc setBytes:&kH32 length:sizeof(kH32) atIndex:6];
+    [enc setBytes:&kW32 length:sizeof(kW32) atIndex:7];
+    [enc setBytes:&sh32 length:sizeof(sh32) atIndex:8];
+    [enc setBytes:&sw32 length:sizeof(sw32) atIndex:9];
+    [enc setBytes:&Ho32 length:sizeof(Ho32) atIndex:10];
+    [enc setBytes:&Wo32 length:sizeof(Wo32) atIndex:11];
+    [enc setBytes:&sc length:sizeof(sc) atIndex:12];
+  });
+  mlx_zero(dx, N * C * H * W);
+  id<MTLBuffer> dxp_u = ctx.get_buffer(dxp, N * C * Hp * Wp);
+  id<MTLBuffer> dx_b = ctx.get_buffer(dx, N * C * H * W);
+  uint32_t H32 = static_cast<uint32_t>(H), W32 = static_cast<uint32_t>(W);
+  uint32_t ph32 = static_cast<uint32_t>(ph), pw32 = static_cast<uint32_t>(pw);
+  run_1d("k_mlx_nchw_unpad", static_cast<uint32_t>(N * C * H * W), ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:dxp_u offset:0 atIndex:0];
+    [enc setBuffer:dx_b offset:0 atIndex:1];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:2];
+    [enc setBytes:&C32 length:sizeof(C32) atIndex:3];
+    [enc setBytes:&H32 length:sizeof(H32) atIndex:4];
+    [enc setBytes:&W32 length:sizeof(W32) atIndex:5];
+    [enc setBytes:&ph32 length:sizeof(ph32) atIndex:6];
+    [enc setBytes:&pw32 length:sizeof(pw32) atIndex:7];
+    [enc setBytes:&Hp32 length:sizeof(Hp32) atIndex:8];
+    [enc setBytes:&Wp32 length:sizeof(Wp32) atIndex:9];
+  });
+  mlx_free(dxp);
+}
+
+void mlx_conv_transpose2d_forward_nchw(const double* x, const double* w, double* y, size_t N, size_t Ci, size_t Hi,
+                                     size_t Wi, size_t Co, size_t kH, size_t kW, size_t sh, size_t sw, size_t ph,
+                                     size_t pw, size_t Ho, size_t Wo) {
+  auto& ctx = AppleMlxContext::instance();
+  size_t total_out = N * Co * Ho * Wo;
+  mlx_zero(y, total_out);
+  id<MTLBuffer> xb = ctx.get_buffer(const_cast<double*>(x), N * Ci * Hi * Wi);
+  id<MTLBuffer> wb = ctx.get_buffer(const_cast<double*>(w), Ci * Co * kH * kW);
+  id<MTLBuffer> yb = ctx.get_buffer(y, total_out);
+  uint32_t N32 = static_cast<uint32_t>(N), Ci32 = static_cast<uint32_t>(Ci), Hi32 = static_cast<uint32_t>(Hi),
+           Wi32 = static_cast<uint32_t>(Wi);
+  uint32_t Co32 = static_cast<uint32_t>(Co), kH32 = static_cast<uint32_t>(kH), kW32 = static_cast<uint32_t>(kW);
+  uint32_t sh32 = static_cast<uint32_t>(sh), sw32 = static_cast<uint32_t>(sw), ph32 = static_cast<uint32_t>(ph),
+           pw32 = static_cast<uint32_t>(pw);
+  uint32_t Ho32 = static_cast<uint32_t>(Ho), Wo32 = static_cast<uint32_t>(Wo);
+  uint32_t total_in = static_cast<uint32_t>(N * Ci * Hi * Wi);
+  run_1d("k_mlx_conv_tr_fwd", total_in, ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:xb offset:0 atIndex:0];
+    [enc setBuffer:wb offset:0 atIndex:1];
+    [enc setBuffer:yb offset:0 atIndex:2];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:3];
+    [enc setBytes:&Ci32 length:sizeof(Ci32) atIndex:4];
+    [enc setBytes:&Hi32 length:sizeof(Hi32) atIndex:5];
+    [enc setBytes:&Wi32 length:sizeof(Wi32) atIndex:6];
+    [enc setBytes:&Co32 length:sizeof(Co32) atIndex:7];
+    [enc setBytes:&kH32 length:sizeof(kH32) atIndex:8];
+    [enc setBytes:&kW32 length:sizeof(kW32) atIndex:9];
+    [enc setBytes:&sh32 length:sizeof(sh32) atIndex:10];
+    [enc setBytes:&sw32 length:sizeof(sw32) atIndex:11];
+    [enc setBytes:&ph32 length:sizeof(ph32) atIndex:12];
+    [enc setBytes:&pw32 length:sizeof(pw32) atIndex:13];
+    [enc setBytes:&Ho32 length:sizeof(Ho32) atIndex:14];
+    [enc setBytes:&Wo32 length:sizeof(Wo32) atIndex:15];
+  });
+}
+
+void mlx_conv_transpose2d_backward_nchw(const double* dy, const double* x, const double* w, double* dx, double* dw,
+                                          size_t N, size_t Ci, size_t Hi, size_t Wi, size_t Co, size_t kH, size_t kW,
+                                          size_t sh, size_t sw, size_t ph, size_t pw, size_t Ho, size_t Wo) {
+  auto& ctx = AppleMlxContext::instance();
+  mlx_zero(dx, N * Ci * Hi * Wi);
+  mlx_zero(dw, Ci * Co * kH * kW);
+  id<MTLBuffer> dyb = ctx.get_buffer(const_cast<double*>(dy), N * Co * Ho * Wo);
+  id<MTLBuffer> xb = ctx.get_buffer(const_cast<double*>(x), N * Ci * Hi * Wi);
+  id<MTLBuffer> wb = ctx.get_buffer(const_cast<double*>(w), Ci * Co * kH * kW);
+  id<MTLBuffer> dxb = ctx.get_buffer(dx, N * Ci * Hi * Wi);
+  id<MTLBuffer> dwb = ctx.get_buffer(dw, Ci * Co * kH * kW);
+  uint32_t N32 = static_cast<uint32_t>(N), Ci32 = static_cast<uint32_t>(Ci), Hi32 = static_cast<uint32_t>(Hi),
+           Wi32 = static_cast<uint32_t>(Wi);
+  uint32_t Co32 = static_cast<uint32_t>(Co), kH32 = static_cast<uint32_t>(kH), kW32 = static_cast<uint32_t>(kW);
+  uint32_t sh32 = static_cast<uint32_t>(sh), sw32 = static_cast<uint32_t>(sw), ph32 = static_cast<uint32_t>(ph),
+           pw32 = static_cast<uint32_t>(pw);
+  uint32_t Ho32 = static_cast<uint32_t>(Ho), Wo32 = static_cast<uint32_t>(Wo);
+  uint32_t total_in = static_cast<uint32_t>(N * Ci * Hi * Wi);
+  run_1d("k_mlx_conv_tr_bwd", total_in, ^(id<MTLComputeCommandEncoder> enc) {
+    [enc setBuffer:dyb offset:0 atIndex:0];
+    [enc setBuffer:xb offset:0 atIndex:1];
+    [enc setBuffer:wb offset:0 atIndex:2];
+    [enc setBuffer:dxb offset:0 atIndex:3];
+    [enc setBuffer:dwb offset:0 atIndex:4];
+    [enc setBytes:&N32 length:sizeof(N32) atIndex:5];
+    [enc setBytes:&Ci32 length:sizeof(Ci32) atIndex:6];
+    [enc setBytes:&Hi32 length:sizeof(Hi32) atIndex:7];
+    [enc setBytes:&Wi32 length:sizeof(Wi32) atIndex:8];
+    [enc setBytes:&Co32 length:sizeof(Co32) atIndex:9];
+    [enc setBytes:&kH32 length:sizeof(kH32) atIndex:10];
+    [enc setBytes:&kW32 length:sizeof(kW32) atIndex:11];
+    [enc setBytes:&sh32 length:sizeof(sh32) atIndex:12];
+    [enc setBytes:&sw32 length:sizeof(sw32) atIndex:13];
+    [enc setBytes:&ph32 length:sizeof(ph32) atIndex:14];
+    [enc setBytes:&pw32 length:sizeof(pw32) atIndex:15];
+    [enc setBytes:&Ho32 length:sizeof(Ho32) atIndex:16];
+    [enc setBytes:&Wo32 length:sizeof(Wo32) atIndex:17];
   });
 }

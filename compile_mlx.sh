@@ -40,11 +40,16 @@ clang++ -O3 -Wall -std=c++17 -fobjc-arc -fPIC -DWITH_MLX $MLX_INCLUDE_FLAGS -c t
 echo "Step 3: compiling autograd core..."
 g++ -O3 -Wall -std=c++17 -fPIC -DWITH_MLX $MLX_INCLUDE_FLAGS -c autograd.cc -o autograd.o
 
+echo "Step 3b: compiling conv/pool helpers..."
+g++ -O3 -Wall -std=c++17 -fPIC -DWITH_MLX $MLX_INCLUDE_FLAGS -c conv_impl.cc -o conv_impl.o
+
 echo "Step 4: compiling pybind11 module..."
 g++ -O3 -Wall -std=c++17 -fPIC -DWITH_MLX $MLX_INCLUDE_FLAGS $PYBIND_INCLUDES -c lognn.cc -o lognn.o
 
 echo "Step 5: linking..."
-clang++ -shared -o "lognn${EXT_SUFFIX}" lognn.o autograd.o tensor_kernels_backend.o tensor_kernels_mlx.o \
+clang++ -shared -o "lognn${EXT_SUFFIX}" lognn.o autograd.o conv_impl.o tensor_kernels_backend.o tensor_kernels_mlx.o \
   -undefined dynamic_lookup -framework Foundation -framework Metal $MLX_LINK_FLAGS
 
 echo "MLX-profile build successful (native Metal kernel path enabled)."
+echo "Extension: lognn${EXT_SUFFIX} — use the same Python to import it, e.g.:"
+echo "  PYTHONPATH=. $PYTHON_BIN -c \"import lognn; print(lognn.__file__, lognn.is_mlx_native_enabled())\""

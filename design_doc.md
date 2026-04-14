@@ -27,7 +27,6 @@
 - OpenMP
 - CUDA
 
-
 ## Stretch Goals
 
 - Apple Silicon support (MLX/MPS)
